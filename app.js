@@ -41,7 +41,10 @@ function saveProfile(p) { localStorage.setItem(STORAGE_PROFILE, JSON.stringify(p
 function loadScans() { try { return JSON.parse(localStorage.getItem(STORAGE_SCANS) || '[]'); } catch (e) { return []; } }
 function saveScans(list) { localStorage.setItem(STORAGE_SCANS, JSON.stringify(list)); }
 
-function todayStr() { return new Date().toISOString().slice(0, 10); }
+function todayStr() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
 function getDailyState() {
   let d;
   try { d = JSON.parse(localStorage.getItem(STORAGE_DAILY) || 'null'); } catch (e) { d = null; }
@@ -238,6 +241,10 @@ async function startStream(which) {
   $(`#still-${which}`).classList.add('hidden');
   video.classList.remove('hidden');
   if (state.streams[which]) return;
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    $(`#frame-${which} .scan-hint`).textContent = 'Camera needs HTTPS — use Upload instead';
+    return;
+  }
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: false });
     state.streams[which] = stream;
