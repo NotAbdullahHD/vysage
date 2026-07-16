@@ -1,204 +1,385 @@
 /* ============================================================
-   Vysage — App logic
+   Vysage — App logic (v2: expanded onboarding, front/side
+   capture, daily limit, animated reveal, dashboard home)
    ============================================================ */
 
-const STORAGE_PROFILE = 'vysage_profile_v1';
-const STORAGE_SCANS = 'vysage_scans_v1';
+const STORAGE_PROFILE = 'vysage_profile_v2';
+const STORAGE_SCANS = 'vysage_scans_v2';
+const STORAGE_DAILY = 'vysage_daily_v1';
+const DAILY_LIMIT = 2;
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 
+const QUESTION_STEPS = ['name', 'gender', 'birthdate', 'height', 'weight', 'objectives', 'archetype'];
+const STEP_ORDER = ['welcome', ...QUESTION_STEPS];
+
+const ANALYZE_TIPS = [
+  "Mapping 68 landmark points across your face…",
+  "Did you know: canthal tilt is the angle of a line through your eye corners.",
+  "What happens if you sleep 8 hours consistently? Under-eye puffiness and skin tone both tend to improve within weeks.",
+  "Facial thirds compares brow-to-nose, nose-to-lip, and lip-to-chin distances.",
+  "What happens if you stay hydrated? Skin texture readings usually get smoother, not just \"glowier.\"",
+  "Symmetry scoring compares both sides of your face against your own midline — not a beauty standard.",
+  "What happens if you fix forward-head posture? Your jawline can visually sharpen without changing your bone structure at all.",
+  "Gonial angle is the angle at the corner of your jaw — sharper angles read as more defined.",
+  "This model runs entirely on your device. Nothing is uploaded.",
+  "What happens if you cut late-night salt? Morning facial puffiness is one of the first things to change.",
+];
+
 let state = {
-  step: 0,
-  profile: { name: '', age: '', gender: '', goals: [] },
-  currentStream: null,
-  lastAnalysis: null,
+  profile: { name: '', gender: null, birthdate: null, height: null, weight: null, goals: [], lookmax: null, archetype: null },
+  streams: { front: null, side: null },
+  captured: { frontCanvas: null, sideCanvas: null },
+  pendingScanContext: 'onboarding', // 'onboarding' | 'dashboard'
 };
+
+/* ---------------- Storage helpers ---------------- */
+
+function loadProfile() { try { return JSON.parse(localStorage.getItem(STORAGE_PROFILE) || 'null'); } catch (e) { return null; } }
+function saveProfile(p) { localStorage.setItem(STORAGE_PROFILE, JSON.stringify(p)); }
+function loadScans() { try { return JSON.parse(localStorage.getItem(STORAGE_SCANS) || '[]'); } catch (e) { return []; } }
+function saveScans(list) { localStorage.setItem(STORAGE_SCANS, JSON.stringify(list)); }
+
+function todayStr() { return new Date().toISOString().slice(0, 10); }
+function getDailyState() {
+  let d;
+  try { d = JSON.parse(localStorage.getItem(STORAGE_DAILY) || 'null'); } catch (e) { d = null; }
+  if (!d || d.date !== todayStr()) d = { date: todayStr(), count: 0 };
+  return d;
+}
+function incrementDaily() {
+  const d = getDailyState();
+  d.count += 1;
+  localStorage.setItem(STORAGE_DAILY, JSON.stringify(d));
+  return d;
+}
+function remainingScansToday() { return Math.max(0, DAILY_LIMIT - getDailyState().count); }
 
 /* ---------------- Onboarding ---------------- */
 
-function loadProfile() {
-  try { return JSON.parse(localStorage.getItem(STORAGE_PROFILE) || 'null'); }
-  catch (e) { return null; }
-}
-function saveProfile(p) { localStorage.setItem(STORAGE_PROFILE, JSON.stringify(p)); }
-
-function loadScans() {
-  try { return JSON.parse(localStorage.getItem(STORAGE_SCANS) || '[]'); }
-  catch (e) { return []; }
-}
-function saveScans(list) { localStorage.setItem(STORAGE_SCANS, JSON.stringify(list)); }
-
-function showStep(n) {
+function showOnboardingStep(stepName) {
   $$('#onboarding .screen').forEach((el) => el.classList.add('hidden'));
-  $(`#onboarding .screen[data-step="${n}"]`).classList.remove('hidden');
-  state.step = n;
+  const el = $(`#onboarding .screen[data-step="${stepName}"]`);
+  el.classList.remove('hidden');
+  el.dataset.currentStep = stepName;
+  if (el.classList.contains('ob-q')) renderStepDots(el, stepName);
+}
+
+function renderStepDots(el, stepName) {
+  const idx = QUESTION_STEPS.indexOf(stepName);
+  const wrap = $('.ob-progress-wrap', el);
+  wrap.innerHTML = QUESTION_STEPS.map((s, i) => {
+    if (i < idx) return '<i class="done"></i>';
+    if (i === idx) return '<i class="current"></i>';
+    return '<i></i>';
+  }).join('');
+}
+
+function goToStep(stepName) { showOnboardingStep(stepName); }
+
+function currentStepName() {
+  const visible = $$('#onboarding .screen').find((el) => !el.classList.contains('hidden'));
+  return visible ? visible.dataset.step : 'welcome';
+}
+
+function nextStepAfter(stepName) {
+  const i = STEP_ORDER.indexOf(stepName);
+  return STEP_ORDER[i + 1] || null;
+}
+function prevStepBefore(stepName) {
+  const i = STEP_ORDER.indexOf(stepName);
+  return STEP_ORDER[Math.max(0, i - 1)];
+}
+
+function collectStepValue(stepName) {
+  switch (stepName) {
+    case 'name':
+      state.profile.name = $('#in-name').value.trim();
+      break;
+    case 'gender': {
+      const sel = $('#gender-chips .chip.selected');
+      state.profile.gender = sel ? sel.dataset.value : null;
+      break;
+    }
+    case 'birthdate':
+      state.profile.birthdate = $('#in-birthdate').value || null;
+      break;
+    case 'height': {
+      const v = $('#in-height').value;
+      const unit = $('#height-unit .unit-btn.active').dataset.unit;
+      state.profile.height = v ? { value: v, unit } : null;
+      break;
+    }
+    case 'weight': {
+      const v = $('#in-weight').value;
+      const unit = $('#weight-unit .unit-btn.active').dataset.unit;
+      state.profile.weight = v ? { value: v, unit } : null;
+      break;
+    }
+    case 'objectives': {
+      state.profile.goals = $$('#goal-chips .chip.selected').map((c) => c.dataset.value);
+      const lm = $('#lookmax-chips .chip.selected');
+      state.profile.lookmax = lm ? lm.dataset.value : null;
+      break;
+    }
+    case 'archetype': {
+      const sel = $('#archetype-grid .archetype-card.selected');
+      state.profile.archetype = sel ? sel.dataset.value : null;
+      break;
+    }
+  }
+}
+
+function clearStepValue(stepName) {
+  switch (stepName) {
+    case 'name': state.profile.name = ''; break;
+    case 'gender': state.profile.gender = null; break;
+    case 'birthdate': state.profile.birthdate = null; break;
+    case 'height': state.profile.height = null; break;
+    case 'weight': state.profile.weight = null; break;
+    case 'objectives': state.profile.goals = []; state.profile.lookmax = null; break;
+    case 'archetype': state.profile.archetype = null; break;
+  }
 }
 
 function initOnboarding() {
+  $$('#onboarding [data-goto]').forEach((btn) => {
+    btn.addEventListener('click', () => goToStep(btn.dataset.goto));
+  });
   $$('#onboarding [data-next]').forEach((btn) => {
     btn.addEventListener('click', () => {
-      if (state.step === 4) { finishOnboarding(); return; }
-      showStep(state.step + 1);
+      const step = currentStepName();
+      collectStepValue(step);
+      advanceFrom(step);
+    });
+  });
+  $$('#onboarding [data-skip]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const step = currentStepName();
+      clearStepValue(step);
+      advanceFrom(step);
     });
   });
   $$('#onboarding [data-back]').forEach((btn) => {
-    btn.addEventListener('click', () => showStep(Math.max(0, state.step - 1)));
+    btn.addEventListener('click', () => goToStep(prevStepBefore(currentStepName())));
   });
 
-  const nameInput = $('#in-name');
-  nameInput.addEventListener('input', () => {
-    state.profile.name = nameInput.value.trim();
-    $('#btn-step1').disabled = state.profile.name.length < 1;
-  });
-
-  const ageInput = $('#in-age');
-  ageInput.addEventListener('input', () => {
-    const v = parseInt(ageInput.value, 10);
-    state.profile.age = ageInput.value;
-    $('#btn-step2').disabled = !(v >= 13 && v <= 99);
-  });
-
-  $$('#gender-chips .chip').forEach((chip) => {
-    chip.addEventListener('click', () => {
-      $$('#gender-chips .chip').forEach((c) => c.classList.remove('selected'));
-      chip.classList.add('selected');
-      state.profile.gender = chip.dataset.value;
-      $('#btn-step3').disabled = false;
+  // single-select chip groups
+  ['gender-chips', 'lookmax-chips'].forEach((id) => {
+    $$(`#${id} .chip`).forEach((chip) => {
+      chip.addEventListener('click', () => {
+        $$(`#${id} .chip`).forEach((c) => c.classList.remove('selected'));
+        chip.classList.add('selected');
+      });
     });
   });
 
+  // multi-select chip group
   $$('#goal-chips .chip').forEach((chip) => {
-    chip.addEventListener('click', () => {
-      chip.classList.toggle('selected');
-      const v = chip.dataset.value;
-      const i = state.profile.goals.indexOf(v);
-      if (chip.classList.contains('selected') && i === -1) state.profile.goals.push(v);
-      if (!chip.classList.contains('selected') && i !== -1) state.profile.goals.splice(i, 1);
+    chip.addEventListener('click', () => chip.classList.toggle('selected'));
+  });
+
+  // unit toggles
+  [$('#height-unit'), $('#weight-unit')].forEach((group) => {
+    $$('.unit-btn', group).forEach((btn) => {
+      btn.addEventListener('click', () => {
+        $$('.unit-btn', group).forEach((b) => b.classList.remove('active'));
+        btn.classList.add('active');
+      });
     });
   });
+
+  // archetype cards
+  $$('#archetype-grid .archetype-card').forEach((card) => {
+    card.addEventListener('click', () => {
+      $$('#archetype-grid .archetype-card').forEach((c) => c.classList.remove('selected'));
+      card.classList.add('selected');
+    });
+  });
+}
+
+function advanceFrom(step) {
+  if (step === 'archetype') { finishOnboarding(); return; }
+  goToStep(nextStepAfter(step));
 }
 
 function finishOnboarding() {
   saveProfile(state.profile);
   $('#onboarding').classList.add('hidden');
-  $('#mainapp').classList.remove('hidden');
-  $('#greet-text').textContent = state.profile.name ? state.profile.name.toUpperCase() : '';
-  renderProfileView();
-  startCamera();
+  state.pendingScanContext = 'onboarding';
+  beginCaptureFlow();
 }
 
-/* ---------------- Navigation ---------------- */
+/* ---------------- Capture flow ---------------- */
 
-function initNav() {
-  $$('.tab').forEach((tab) => {
-    tab.addEventListener('click', () => switchView(tab.dataset.view));
-  });
-  $('#link-rescan').addEventListener('click', () => switchView('scan'));
-  $('#btn-empty-scan').addEventListener('click', () => switchView('scan'));
+function showCapStep(name) {
+  $$('#captureflow .screen[data-cap]').forEach((el) => el.classList.add('hidden'));
+  $(`#captureflow .screen[data-cap="${name}"]`).classList.remove('hidden');
 }
 
-function switchView(name) {
-  $$('.view').forEach((v) => v.classList.add('hidden'));
-  $(`#view-${name}`).classList.remove('hidden');
-  $$('.tab').forEach((t) => t.classList.toggle('active', t.dataset.view === name));
-  if (name === 'scan') startCamera(); else stopCamera();
-  if (name === 'dashboard') renderDashboard();
-  if (name === 'progress') renderProgress();
-  if (name === 'profile') renderProfileView();
+async function beginCaptureFlow() {
+  const remaining = remainingScansToday();
+  if (remaining <= 0) {
+    toast(`Daily scan limit reached (${DAILY_LIMIT}/${DAILY_LIMIT}). Come back tomorrow.`);
+    enterMainApp();
+    return;
+  }
+  $('#captureflow').classList.remove('hidden');
+  $('#mainapp').classList.add('hidden');
+  state.captured.frontCanvas = null;
+  state.captured.sideCanvas = null;
+  showCapStep('front');
+  await startStream('front');
 }
 
-/* ---------------- Camera / capture ---------------- */
-
-async function startCamera() {
-  const video = $('#video');
-  $('#still-img').classList.add('hidden');
+async function startStream(which) {
+  const video = $(`#video-${which}`);
+  $(`#still-${which}`).classList.add('hidden');
   video.classList.remove('hidden');
-  if (state.currentStream) return;
+  if (state.streams[which]) return;
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: false });
-    state.currentStream = stream;
+    state.streams[which] = stream;
     video.srcObject = stream;
   } catch (err) {
-    $('#scan-hint').textContent = 'Camera unavailable — use Upload photo instead';
+    $(`#frame-${which} .scan-hint`).textContent = 'Camera unavailable — use Upload instead';
   }
 }
-
-function stopCamera() {
-  if (state.currentStream) {
-    state.currentStream.getTracks().forEach((t) => t.stop());
-    state.currentStream = null;
+function stopStream(which) {
+  if (state.streams[which]) {
+    state.streams[which].getTracks().forEach((t) => t.stop());
+    state.streams[which] = null;
   }
 }
+function stopAllStreams() { stopStream('front'); stopStream('side'); }
 
-function initScanControls() {
-  $('#btn-upload').addEventListener('click', () => $('#file-input').click());
-  $('#file-input').addEventListener('change', (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    const img = new Image();
-    img.onload = () => runAnalysisOnImage(img);
-    img.src = URL.createObjectURL(file);
+function canvasFromVideo(video) {
+  if (!video.videoWidth) return null;
+  const c = document.createElement('canvas');
+  c.width = video.videoWidth;
+  c.height = video.videoHeight;
+  c.getContext('2d').drawImage(video, 0, 0);
+  return c;
+}
+function canvasFromImage(img) {
+  const c = document.createElement('canvas');
+  c.width = img.naturalWidth || img.width;
+  c.height = img.naturalHeight || img.height;
+  c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+  return c;
+}
+
+function initCaptureControls() {
+  $('#btn-upload-front').addEventListener('click', () => $('#file-front').click());
+  $('#file-front').addEventListener('change', (e) => handleUpload(e, 'front'));
+  $('#btn-capture-front').addEventListener('click', () => {
+    const canvas = canvasFromVideo($('#video-front'));
+    if (!canvas) return;
+    state.captured.frontCanvas = canvas;
+    stopStream('front');
+    showCapStep('side');
+    startStream('side');
   });
-  $('#btn-capture').addEventListener('click', captureFromVideo);
+
+  $('#btn-upload-side').addEventListener('click', () => $('#file-side').click());
+  $('#file-side').addEventListener('change', (e) => handleUpload(e, 'side'));
+  $('#btn-capture-side').addEventListener('click', () => {
+    const canvas = canvasFromVideo($('#video-side'));
+    if (!canvas) return;
+    state.captured.sideCanvas = canvas;
+    stopStream('side');
+    runAnalyzingSequence();
+  });
+  $('#btn-skip-side').addEventListener('click', () => {
+    stopStream('side');
+    runAnalyzingSequence();
+  });
 }
 
-function captureFromVideo() {
-  const video = $('#video');
-  if (!video.videoWidth) return;
-  const canvas = document.createElement('canvas');
-  canvas.width = video.videoWidth;
-  canvas.height = video.videoHeight;
-  canvas.getContext('2d').drawImage(video, 0, 0);
+function handleUpload(e, which) {
+  const file = e.target.files[0];
+  if (!file) return;
   const img = new Image();
-  img.onload = () => runAnalysisOnImage(img);
-  img.src = canvas.toDataURL('image/jpeg', 0.92);
+  img.onload = () => {
+    const canvas = canvasFromImage(img);
+    if (which === 'front') {
+      state.captured.frontCanvas = canvas;
+      stopStream('front');
+      showCapStep('side');
+      startStream('side');
+    } else {
+      state.captured.sideCanvas = canvas;
+      stopStream('side');
+      runAnalyzingSequence();
+    }
+  };
+  img.src = URL.createObjectURL(file);
 }
 
-/* ---------------- Analysis pipeline ---------------- */
+/* ---------------- Analyzing sequence ---------------- */
 
-function showLoading(text) {
-  $('#loading-overlay').classList.remove('hidden');
-  $('#loading-text').textContent = text;
-}
-function hideLoading() { $('#loading-overlay').classList.add('hidden'); }
-function toast(msg) {
-  const t = document.createElement('div');
-  t.className = 'toast';
-  t.textContent = msg;
-  document.body.appendChild(t);
-  setTimeout(() => t.remove(), 2400);
-}
+async function runAnalyzingSequence() {
+  showCapStep('analyzing');
+  const bar = $('#analyze-progress');
+  const pct = $('#analyze-pct');
+  const tipEl = $('#analyze-tip');
 
-async function runAnalysisOnImage(imgEl) {
-  showLoading('Loading measurement models…');
-  const ok = await ensureModelsLoaded((msg) => $('#loading-text').textContent = msg);
-  if (!ok) { hideLoading(); toast('Could not load models — check connection'); return; }
+  let progress = 0;
+  let tipIndex = 0;
+  const shuffled = [...ANALYZE_TIPS].sort(() => Math.random() - 0.5);
+  tipEl.textContent = shuffled[0];
 
-  $('#loading-text').textContent = 'Locating landmarks…';
-  const canvas = document.createElement('canvas');
-  canvas.width = imgEl.naturalWidth || imgEl.width;
-  canvas.height = imgEl.naturalHeight || imgEl.height;
-  canvas.getContext('2d').drawImage(imgEl, 0, 0, canvas.width, canvas.height);
+  const tipTimer = setInterval(() => {
+    tipIndex = (tipIndex + 1) % shuffled.length;
+    tipEl.textContent = shuffled[tipIndex];
+  }, 1300);
 
+  const tickTo = (target, duration) => new Promise((resolve) => {
+    const start = progress;
+    const startTime = performance.now();
+    function step(now) {
+      const t = Math.min(1, (now - startTime) / duration);
+      progress = start + (target - start) * t;
+      bar.style.width = progress + '%';
+      pct.textContent = Math.round(progress) + '%';
+      if (t < 1) requestAnimationFrame(step); else resolve();
+    }
+    requestAnimationFrame(step);
+  });
+
+  await tickTo(30, 600);
+  const ok = await ensureModelsLoaded(() => {});
+  await tickTo(55, 400);
+
+  if (!ok) {
+    clearInterval(tipTimer);
+    toast('Could not load models — check connection');
+    showCapStep('front');
+    startStream('front');
+    return;
+  }
+
+  await tickTo(75, 500);
   let result;
   try {
-    result = await detectFace(canvas);
+    result = await detectFace(state.captured.frontCanvas);
   } catch (err) {
-    console.error(err);
-    hideLoading();
-    toast('Detection failed — try a clearer, front-facing photo');
-    return;
+    result = null;
   }
+  await tickTo(92, 400);
+
   if (!result) {
-    hideLoading();
-    toast('No face detected — try better lighting, face centered');
+    clearInterval(tipTimer);
+    toast('No face detected in front photo — try better lighting, face centered');
+    showCapStep('front');
+    startStream('front');
     return;
   }
 
-  $('#loading-text').textContent = 'Computing geometry…';
-  const analysis = analyzeLandmarks(result.landmarks, canvas);
-  const thumb = shrinkToThumb(canvas, 120);
+  const analysis = analyzeLandmarks(result.landmarks, state.captured.frontCanvas);
+  const frontThumb = shrinkToThumb(state.captured.frontCanvas, 240);
+  const sideThumb = state.captured.sideCanvas ? shrinkToThumb(state.captured.sideCanvas, 240) : null;
 
   const record = {
     date: new Date().toISOString(),
@@ -207,15 +388,18 @@ async function runAnalysisOnImage(imgEl) {
     metrics: analysis.metrics,
     landmarkPoints: analysis.landmarkPoints,
     imageSize: analysis.imageSize,
-    thumb,
+    thumb: shrinkToThumb(state.captured.frontCanvas, 120),
+    frontThumb,
+    sideThumb,
   };
   const scans = loadScans();
   scans.push(record);
   saveScans(scans);
-  state.lastAnalysis = record;
+  incrementDaily();
 
-  hideLoading();
-  switchView('dashboard');
+  await tickTo(100, 300);
+  clearInterval(tipTimer);
+  setTimeout(() => renderReveal(record), 200);
 }
 
 function shrinkToThumb(canvas, size) {
@@ -225,13 +409,143 @@ function shrinkToThumb(canvas, size) {
   const s = Math.min(canvas.width, canvas.height);
   const sx = (canvas.width - s) / 2, sy = (canvas.height - s) / 2;
   ctx.drawImage(canvas, sx, sy, s, s, 0, 0, size, size);
-  return c.toDataURL('image/jpeg', 0.6);
+  return c.toDataURL('image/jpeg', 0.7);
+}
+
+/* ---------------- Reveal screen ---------------- */
+
+function renderReveal(record) {
+  showCapStep('reveal');
+  const el = $('#reveal-screen');
+  const pts = record.landmarkPoints;
+  const { w, h } = record.imageSize;
+
+  let overlaySvg = '';
+  if (pts && w) {
+    const dots = pts.map((p) => `<circle cx="${(p.x / w) * 100}%" cy="${(p.y / h) * 100}%" r="1.6" fill="#37E5FF" opacity="0.85"/>`).join('');
+    overlaySvg = `<svg viewBox="0 0 100 100" preserveAspectRatio="none" style="position:absolute;inset:0;width:100%;height:100%;">${dots}</svg>`;
+  }
+
+  const metricEntries = Object.values(record.metrics);
+
+  el.innerHTML = `
+    <div class="reveal-wrap" id="reveal-capture-target">
+      <p class="reveal-title">Vysage · Scan Result</p>
+      <div class="reveal-photo-ring">
+        <img src="${record.frontThumb}" />
+        ${overlaySvg}
+      </div>
+      <div class="reveal-brand"><span class="dot"></span><span>Vysage</span></div>
+      <div class="reveal-score-row">
+        <span class="big" id="reveal-count">0.0</span>
+        <span class="of10">/ 10 · ${tierFor(record.overall).label}</span>
+      </div>
+      <div class="reveal-grid" id="reveal-grid"></div>
+      <p class="reveal-tag">vysage.app</p>
+    </div>
+    <div class="reveal-actions">
+      <button class="btn btn-secondary" id="btn-download-reveal" style="flex:1">Download image</button>
+      <button class="btn btn-primary" id="btn-reveal-continue" style="flex:1">Continue</button>
+    </div>
+  `;
+
+  const grid = $('#reveal-grid', el);
+  metricEntries.forEach((m, i) => {
+    const card = document.createElement('div');
+    card.className = 'reveal-card';
+    card.style.animationDelay = `${0.4 + i * 0.06}s`;
+    card.innerHTML = `
+      <div class="r-name">${m.label}</div>
+      <div class="r-val" data-target="${Math.round(m.score * 10)}">0</div>
+      <div class="reveal-bar-track"><div class="reveal-bar-fill" data-width="${m.score * 10}"></div></div>
+    `;
+    grid.appendChild(card);
+  });
+
+  // animate count-up overall score
+  animateCountUp($('#reveal-count', el), record.overall);
+  // animate metric numbers + bars after a short delay
+  setTimeout(() => {
+    $$('.reveal-card .r-val', el).forEach((v) => animateCountUp(v, parseInt(v.dataset.target, 10) / 10));
+    $$('.reveal-bar-fill', el).forEach((b) => { b.style.width = b.dataset.width + '%'; });
+  }, 500);
+
+  $('#btn-reveal-continue').addEventListener('click', () => {
+    stopAllStreams();
+    enterMainApp();
+  });
+  $('#btn-download-reveal').addEventListener('click', () => downloadReveal());
+}
+
+function animateCountUp(el, target) {
+  const duration = 900;
+  const start = performance.now();
+  function step(now) {
+    const t = Math.min(1, (now - start) / duration);
+    const eased = 1 - Math.pow(1 - t, 3);
+    el.textContent = (target * eased).toFixed(1);
+    if (t < 1) requestAnimationFrame(step);
+  }
+  requestAnimationFrame(step);
+}
+
+function downloadReveal() {
+  const target = $('#reveal-capture-target');
+  if (!window.html2canvas) { toast('Image export unavailable offline'); return; }
+  html2canvas(target, { backgroundColor: '#04060B', scale: 2 }).then((canvas) => {
+    const link = document.createElement('a');
+    link.download = `vysage-result-${Date.now()}.png`;
+    link.href = canvas.toDataURL('image/png');
+    link.click();
+  }).catch(() => toast('Could not export image'));
+}
+
+/* ---------------- Main app ---------------- */
+
+function enterMainApp() {
+  $('#onboarding').classList.add('hidden');
+  $('#captureflow').classList.add('hidden');
+  $('#mainapp').classList.remove('hidden');
+  const p = loadProfile();
+  $('#greet-text').textContent = p && p.name ? p.name.toUpperCase() : '';
+  switchView('dashboard');
+}
+
+function initNav() {
+  $$('.tab').forEach((tab) => tab.addEventListener('click', () => switchView(tab.dataset.view)));
+  $('#btn-empty-scan').addEventListener('click', () => startNewScan());
+  $('#btn-new-scan').addEventListener('click', () => startNewScan());
+}
+
+function startNewScan() {
+  state.pendingScanContext = 'dashboard';
+  beginCaptureFlow();
+}
+
+function switchView(name) {
+  $$('.view').forEach((v) => v.classList.add('hidden'));
+  $(`#view-${name}`).classList.remove('hidden');
+  $$('.tab').forEach((t) => t.classList.toggle('active', t.dataset.view === name));
+  if (name === 'dashboard') renderDashboard();
+  if (name === 'progress') renderProgress();
+  if (name === 'profile') renderProfileView();
 }
 
 /* ---------------- Dashboard rendering ---------------- */
 
+function toast(msg) {
+  const t = document.createElement('div');
+  t.className = 'toast';
+  t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 2600);
+}
+
 function renderDashboard() {
   const scans = loadScans();
+  const remaining = remainingScansToday();
+  $('#link-scan-limit').textContent = `${remaining}/${DAILY_LIMIT} scans left today`;
+
   if (!scans.length) {
     $('#dashboard-empty').classList.remove('hidden');
     $('#dashboard-content').classList.add('hidden');
@@ -240,22 +554,25 @@ function renderDashboard() {
   $('#dashboard-empty').classList.add('hidden');
   $('#dashboard-content').classList.remove('hidden');
 
-  const latest = scans[scans.length - 1];
-  const tierInfo = tierFor(latest.overall);
+  const best = scans.reduce((a, b) => (b.overall > a.overall ? b : a), scans[0]);
+  const tierInfo = tierFor(best.overall);
 
-  $('#score-overall').textContent = latest.overall.toFixed(1);
+  $('#score-overall').textContent = best.overall.toFixed(1);
   $('#score-tier').textContent = tierInfo.tier;
   $('#score-label').textContent = tierInfo.label;
-  $('#score-potential').textContent = `Potential ${latest.potential.toFixed(1)} · ${scans.length} scan${scans.length > 1 ? 's' : ''} logged`;
+  $('#score-potential').textContent = `Potential ${best.potential.toFixed(1)} · ${scans.length} scan${scans.length > 1 ? 's' : ''} logged`;
 
   const circumference = 2 * Math.PI * 46;
-  const offset = circumference - (latest.overall / 10) * circumference;
+  const offset = circumference - (best.overall / 10) * circumference;
   $('#ring-fill').setAttribute('stroke-dasharray', circumference.toFixed(1));
   $('#ring-fill').setAttribute('stroke-dashoffset', offset.toFixed(1));
 
-  renderMetricGrid(latest.metrics);
-  renderBlueprint(latest);
-  renderProtocols(latest.metrics);
+  renderMetricGrid(best.metrics);
+  renderBlueprint(best);
+  renderProtocols(best.metrics);
+
+  $('#btn-new-scan').disabled = remaining <= 0;
+  $('#btn-new-scan').textContent = remaining <= 0 ? 'Daily limit reached' : 'New scan';
 }
 
 function colorForScore(score) {
@@ -320,12 +637,14 @@ function renderBlueprint(record) {
 }
 
 const PROTOCOL_LIBRARY = {
+  canthalTilt: { tag: 'Eyes', text: 'Sleep and sinus congestion visibly affect eye-area appearance more than anything else here.' },
   jawline: { tag: 'Jawline', text: 'Neck and jaw isometric holds, posture drills, and reduced mouth-breathing — small daily practices, not overnight fixes.' },
-  symmetry: { tag: 'Symmetry', text: 'Symmetry is mostly structural. Even lighting and consistent camera angle when tracking will matter more than any routine.' },
+  symmetry: { tag: 'Symmetry', text: 'Symmetry is mostly structural. Even lighting and a consistent camera angle when tracking will matter more than any routine.' },
   skin: { tag: 'Skin', text: 'Consistent SPF, a simple cleanse/moisturize routine, and sleep are the highest-leverage, lowest-risk changes.' },
   midface: { tag: 'Midface', text: 'Midface proportion is largely bone-structure driven and stable — tracking trend over time is more useful than chasing this number.' },
   nose: { tag: 'Nose', text: 'Nose proportion is structural. Contour and photo angle can change how it reads far more than anything else.' },
   eyes: { tag: 'Eyes', text: 'Sleep quality and hydration visibly affect the under-eye area more than any single "eye exercise."' },
+  lips: { tag: 'Lips', text: 'Hydration and a simple lip balm routine affect perceived fullness more than people expect.' },
 };
 
 function renderProtocols(metrics) {
@@ -360,7 +679,6 @@ function renderProgress() {
   emptyEl.classList.add('hidden');
   $('#chart-wrap').classList.remove('hidden');
 
-  // Chart
   const svg = $('#progress-chart');
   const vw = 300, vh = 140, pad = 18;
   const vals = scans.map((s) => s.overall);
@@ -377,12 +695,8 @@ function renderProgress() {
     const [x, y] = pts[i].split(',');
     return `<circle cx="${x}" cy="${y}" r="3" fill="#C9A24B"/>`;
   }).join('');
-  svg.innerHTML = `
-    <polyline points="${pts.join(' ')}" fill="none" stroke="#3EB8A6" stroke-width="1.6"/>
-    ${dots}
-  `;
+  svg.innerHTML = `<polyline points="${pts.join(' ')}" fill="none" stroke="#3EB8A6" stroke-width="1.6"/>${dots}`;
 
-  // History rows, newest first
   [...scans].reverse().forEach((s) => {
     const row = document.createElement('div');
     row.className = 'history-row';
@@ -402,16 +716,35 @@ function renderProgress() {
 /* ---------------- Profile view ---------------- */
 
 const GOAL_LABELS = { jawline: 'Jawline', skin: 'Skin', symmetry: 'Symmetry', posture: 'Posture', curious: 'Curious' };
-const GENDER_LABELS = { masc: 'Masculine norms', fem: 'Feminine norms', neutral: 'Neutral / blended' };
+const GENDER_LABELS = { male: 'Male', female: 'Female', nonbinary: 'Non-binary' };
+const LOOKMAX_LABELS = { neutral: 'Neutral', soft: 'Softmaxxing', hard: 'Hardmaxxing', experimental: 'Experimental' };
+const ARCHETYPE_LABELS = { chiseled: 'Classic Chiseled', softboy: 'Soft & Boyish', editorial: 'Sculpted Editorial', rugged: 'Rugged Angular', natural: 'Natural Balance' };
+
+function calcAge(birthdate) {
+  if (!birthdate) return null;
+  const b = new Date(birthdate);
+  const now = new Date();
+  let age = now.getFullYear() - b.getFullYear();
+  const m = now.getMonth() - b.getMonth();
+  if (m < 0 || (m === 0 && now.getDate() < b.getDate())) age--;
+  return age;
+}
 
 function renderProfileView() {
   const p = loadProfile();
   if (!p) return;
   $('#p-name').textContent = p.name || '—';
-  $('#p-age').textContent = p.age || '—';
   $('#p-gender').textContent = GENDER_LABELS[p.gender] || '—';
+  const age = calcAge(p.birthdate);
+  $('#p-age').textContent = age !== null ? `${age}` : '—';
+  $('#p-height').textContent = p.height ? `${p.height.value} ${p.height.unit}` : '—';
+  $('#p-weight').textContent = p.weight ? `${p.weight.value} ${p.weight.unit}` : '—';
+  $('#p-lookmax').textContent = LOOKMAX_LABELS[p.lookmax] || '—';
   $('#p-goals').textContent = (p.goals && p.goals.length) ? p.goals.map((g) => GOAL_LABELS[g] || g).join(', ') : '—';
+  $('#p-archetype').textContent = ARCHETYPE_LABELS[p.archetype] || '—';
   $('#p-count').textContent = loadScans().length;
+  const d = getDailyState();
+  $('#p-today').textContent = `${d.count} / ${DAILY_LIMIT}`;
 }
 
 function initProfileActions() {
@@ -419,6 +752,7 @@ function initProfileActions() {
     if (confirm('Erase your profile and all scan history from this device? This cannot be undone.')) {
       localStorage.removeItem(STORAGE_PROFILE);
       localStorage.removeItem(STORAGE_SCANS);
+      localStorage.removeItem(STORAGE_DAILY);
       location.reload();
     }
   });
@@ -428,19 +762,16 @@ function initProfileActions() {
 
 function boot() {
   initOnboarding();
+  initCaptureControls();
   initNav();
-  initScanControls();
   initProfileActions();
 
   const existing = loadProfile();
   if (existing) {
     state.profile = existing;
-    $('#onboarding').classList.add('hidden');
-    $('#mainapp').classList.remove('hidden');
-    $('#greet-text').textContent = existing.name ? existing.name.toUpperCase() : '';
-    startCamera();
+    enterMainApp();
   } else {
-    showStep(0);
+    goToStep('welcome');
   }
 
   if ('serviceWorker' in navigator) {
