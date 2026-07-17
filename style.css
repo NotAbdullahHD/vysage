@@ -35,6 +35,7 @@ body {
     repeating-linear-gradient(90deg, rgba(38,49,64,0.35) 0, rgba(38,49,64,0.35) 1px, transparent 1px, transparent 44px);
   background-attachment: fixed;
   min-height: 100vh;
+  min-height: 100dvh;
 }
 
 button { font-family: inherit; }
@@ -45,6 +46,7 @@ a { color: inherit; }
   max-width: 480px;
   margin: 0 auto;
   min-height: 100vh;
+  min-height: 100dvh;
   position: relative;
   display: flex;
   flex-direction: column;
@@ -69,8 +71,12 @@ a { color: inherit; }
   flex: 1;
   display: flex;
   flex-direction: column;
-  padding: 28px 22px 100px;
+  padding: calc(28px + env(safe-area-inset-top)) 22px calc(24px + env(safe-area-inset-bottom));
   animation: fadeIn 0.35s ease;
+}
+
+.view {
+  padding-bottom: calc(100px + env(safe-area-inset-bottom));
 }
 
 @keyframes fadeIn {
@@ -236,7 +242,7 @@ p.ob-sub {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 20px 22px 14px;
+  padding: calc(20px + env(safe-area-inset-top)) 22px 14px;
 }
 .topbar .brandmark { margin-bottom: 0; }
 .topbar .greet {
@@ -329,6 +335,9 @@ p.ob-sub {
   object-fit: cover;
   position: absolute;
   inset: 0;
+}
+.scan-frame video {
+  transform: scaleX(-1); /* mirror the live preview only — captured frame stays true-to-life */
 }
 .scan-overlay-svg {
   position: absolute;
@@ -669,7 +678,7 @@ input[type="date"] {
   border-radius: 10px;
   padding: 14px 15px;
   color: var(--ink);
-  font-size: 15px;
+  font-size: 16px;
   font-family: var(--body);
   color-scheme: dark;
 }
@@ -714,6 +723,7 @@ input[type="date"]:focus { outline: none; border-color: var(--gold); }
 /* ---------------- Capture flow ---------------- */
 #captureflow, #captureflow .screen[data-cap] {
   min-height: 100vh;
+  min-height: 100dvh;
 }
 .cap-title {
   font-family: var(--display);
@@ -930,3 +940,124 @@ input[type="date"]:focus { outline: none; border-color: var(--gold); }
   gap: 10px;
   padding: 20px 4px 4px;
 }
+
+/* ============================================================
+   Subscription / Plans UI
+   ============================================================ */
+
+.plan-card {
+  background: linear-gradient(160deg, rgba(201,162,75,0.10), rgba(62,184,166,0.04)), var(--panel);
+  border: 1px solid var(--gold-dim);
+  border-radius: var(--radius);
+  padding: 18px 18px 16px;
+  margin-bottom: 24px;
+}
+.plan-card-top { margin-bottom: 8px; }
+.plan-badge {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  padding: 3px 9px;
+  border-radius: 5px;
+  border: 1px solid var(--ink-dim);
+  color: var(--ink-dim);
+}
+.plan-badge.is-pro {
+  border-color: var(--gold);
+  color: var(--gold);
+  background: rgba(201,162,75,0.12);
+}
+.plan-card h3 {
+  font-family: var(--display);
+  font-size: 17px;
+  font-weight: 600;
+  margin: 6px 0 6px;
+}
+.plan-card p {
+  font-size: 12.5px;
+  color: var(--ink-dim);
+  line-height: 1.5;
+  margin: 0 0 14px;
+}
+
+.plan-hero {
+  text-align: center;
+  padding: 6px 4px 10px;
+}
+.plan-hero-badge {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  color: #0B0F14;
+  background: linear-gradient(120deg, var(--gold), #E8CD8F);
+  padding: 5px 14px;
+  border-radius: 100px;
+  font-weight: 700;
+}
+.plan-hero .ob-title { text-align: center; }
+.plan-hero .ob-sub { text-align: center; margin: 0 auto; }
+
+.price-display {
+  text-align: center;
+  margin: 20px 0 22px;
+}
+.price-big {
+  font-family: var(--display);
+  font-size: 40px;
+  font-weight: 700;
+  color: var(--gold);
+}
+.price-sub {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--ink-dim);
+  margin-left: 4px;
+}
+
+.feature-compare {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.compare-head, .compare-row {
+  display: grid;
+  grid-template-columns: 1.5fr 0.85fr 0.85fr;
+  align-items: center;
+  padding: 12px 14px;
+}
+.compare-head {
+  background: var(--panel-2);
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+}
+.compare-head .ch-pro { color: var(--gold); }
+.compare-row {
+  border-top: 1px solid var(--line-soft);
+  font-size: 12.5px;
+}
+.compare-row .cr-label { color: var(--ink); }
+.compare-row .cr-free { color: var(--ink-dim); text-align: center; }
+.compare-row .cr-pro { color: var(--gold); text-align: center; font-weight: 600; }
+
+.plan-fineprint {
+  text-align: center;
+  font-size: 11px;
+  color: var(--ink-dim);
+  margin-top: 12px;
+}
+
+.upsell-row {
+  text-align: center;
+  padding: 14px;
+  font-size: 12px;
+  color: var(--ink-dim);
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  margin-top: 6px;
+}
+.upsell-row a { color: var(--gold); font-family: var(--mono); font-size: 11px; text-decoration: underline; cursor: pointer; }

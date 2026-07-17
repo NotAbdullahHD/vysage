@@ -224,7 +224,7 @@
         <img id="still-front" class="hidden" />
         <div class="scan-hint">Center face in frame</div>
       </div>
-      <input type="file" accept="image/*" capture="user" class="upload-input" id="file-front" />
+      <input type="file" accept="image/*" class="upload-input" id="file-front" />
       <div class="scan-controls">
         <button class="btn btn-secondary" id="btn-upload-front" style="flex:1">Upload instead</button>
         <button class="btn btn-primary" id="btn-capture-front" style="flex:1">Capture</button>
@@ -239,7 +239,7 @@
         <img id="still-side" class="hidden" />
         <div class="scan-hint">Show a clean profile line</div>
       </div>
-      <input type="file" accept="image/*" capture="user" class="upload-input" id="file-side" />
+      <input type="file" accept="image/*" class="upload-input" id="file-side" />
       <div class="scan-controls">
         <button class="btn btn-secondary" id="btn-upload-side" style="flex:1">Upload instead</button>
         <button class="btn btn-primary" id="btn-capture-side" style="flex:1">Capture</button>
@@ -333,6 +333,15 @@
     <!-- ---- PROFILE VIEW ---- -->
     <section class="screen view hidden" id="view-profile">
       <div class="section-head"><h2>Profile</h2></div>
+
+      <div class="plan-card" id="plan-card">
+        <div class="plan-card-top">
+          <span class="plan-badge" id="plan-badge-profile">FREE</span>
+        </div>
+        <h3 id="plan-card-title">You're on Free</h3>
+        <p id="plan-card-sub">Unlock unlimited scans, full history, and watermark-free exports.</p>
+        <button class="btn btn-primary" id="btn-open-plans" style="width:100%">See Vysage Pro</button>
+      </div>
       <div class="profile-row"><span>Name</span><span id="p-name">—</span></div>
       <div class="profile-row"><span>Gender</span><span id="p-gender">—</span></div>
       <div class="profile-row"><span>Age</span><span id="p-age">—</span></div>
@@ -347,6 +356,38 @@
       <div class="note-card">All data — photos, measurements, scores — stays in this browser's local storage. Nothing is sent to a server.</div>
       <div class="ob-actions">
         <button class="btn btn-secondary" id="btn-reset" style="width:100%">Erase all data</button>
+      </div>
+    </section>
+
+    <!-- ---- PLANS VIEW ---- -->
+    <section class="screen view hidden" id="view-plans" style="padding-top:6px;">
+      <div class="section-head"><h2>Vysage Pro</h2><a id="link-plans-back">← Profile</a></div>
+
+      <div class="plan-hero">
+        <div class="plan-hero-badge">PRO</div>
+        <h1 class="ob-title" style="font-size:23px; margin-top:14px;">See the full picture.</h1>
+        <p class="ob-sub">Unlimited scans, full history, and clean exports for your content.</p>
+      </div>
+
+      <div class="chip-row" id="billing-toggle" style="justify-content:center;">
+        <div class="chip selected" data-cycle="monthly">Monthly</div>
+        <div class="chip" data-cycle="yearly">Yearly · Save 52%</div>
+      </div>
+
+      <div class="price-display">
+        <span class="price-big" id="price-big">$6.99</span><span class="price-sub" id="price-sub">/ month</span>
+      </div>
+
+      <div class="feature-compare" id="feature-compare"></div>
+
+      <div class="ob-actions" style="padding-top:20px;">
+        <button class="btn btn-primary" id="btn-upgrade" style="width:100%">Upgrade to Pro</button>
+      </div>
+      <p class="plan-fineprint">Cancel anytime from your profile. No commitment.</p>
+
+      <div id="pro-manage-block" class="hidden">
+        <div class="note-card" style="margin-top:6px;">You're on Vysage Pro. Thanks for supporting the app.</div>
+        <button class="btn btn-secondary" id="btn-downgrade" style="width:100%; margin-top:10px;">Downgrade to Free</button>
       </div>
     </section>
 

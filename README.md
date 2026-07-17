@@ -3,6 +3,13 @@
 Installable, camera-based facial geometry scanner. Works on phone (Add to Home Screen) and desktop browsers. 100% client-side — no backend, no account, no data leaves the device.
 
 ## What's new in this version
+- **Fixed: "Upload photo" was silently forcing the camera on mobile.** The file inputs had a `capture="user"` attribute, which many mobile browsers (notably Android Chrome) treat as "always launch the camera," skipping the gallery entirely. Removed — Upload now opens the real photo picker (camera or gallery) on phone and the normal file browser on desktop.
+- **Vysage Pro (UI + structure only — no real billing wired up).** A Plans screen (opened from a card at the top of Profile) with a monthly/yearly pricing toggle and a data-driven Free-vs-Pro feature comparison table (`PLAN_FEATURES` in `app.js` — edit that array to change perks). Tapping Upgrade sets a local `tier: 'pro'` flag and actually changes app behavior:
+  - Daily scan limit is bypassed (`Unlimited`)
+  - Reveal export watermark switches from "vysage.app" to "Vysage Pro"
+  - Progress history list caps at 5 scans for Free with an upsell nudge (Pro sees full history; the trend chart itself always shows full history regardless of tier)
+  - Profile shows a Free/Pro badge and a Manage/Downgrade flow
+  **Important:** this is a client-side-only flag stored in `localStorage` — trivially editable via browser dev tools. It's real enough to demo and to build your marketing/UX around, but it is *not* a real paywall. Before charging real money you need a backend to verify payment (Stripe + a server, RevenueCat, etc.) and gate features off a value the client can't edit. The upgrade handler in `app.js` (`$('#btn-upgrade')` listener) has a `NOTE:` comment marking exactly where to swap in real billing.
 - **Expanded intake**: name, gender, date of birth, height, weight, objectives, "how far you're open to going" (neutral/soft/hard/experimental), and an aspirational **archetype** picker — every question has a Skip button.
 - Note: the archetype step intentionally uses generic look categories, not real celebrities. Letting users pick a specific real person as a "target face" to be scored against is a well-documented trigger for body-image issues, so that piece isn't built here — swap in your own copy for the archetype cards if you want different categories.
 - **Front + side capture** flow after onboarding (and before every new scan), each with camera or upload.

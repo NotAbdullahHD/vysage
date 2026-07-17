@@ -6,6 +6,21 @@
 const STORAGE_PROFILE = 'vysage_profile_v2';
 const STORAGE_SCANS = 'vysage_scans_v2';
 const STORAGE_DAILY = 'vysage_daily_v1';
+const STORAGE_PLAN = 'vysage_plan_v1';
+const FREE_HISTORY_LIMIT = 5;
+
+const PLAN_FEATURES = [
+  { label: 'Daily scans', free: '2 / day', pro: 'Unlimited' },
+  { label: 'Scan history', free: `Last ${FREE_HISTORY_LIMIT}`, pro: 'Full history' },
+  { label: 'Reveal exports', free: 'Watermarked', pro: 'No watermark' },
+  { label: 'Improvement protocols', free: 'Top 3', pro: 'Full breakdown' },
+  { label: 'Archetype insight', free: 'Basic match', pro: 'Full compatibility' },
+  { label: 'New features', free: '—', pro: 'Early access' },
+];
+const PLAN_PRICING = {
+  monthly: { big: '$6.99', sub: '/ month' },
+  yearly: { big: '$39.99', sub: '/ year' },
+};
 const DAILY_LIMIT = 2;
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -57,7 +72,17 @@ function incrementDaily() {
   localStorage.setItem(STORAGE_DAILY, JSON.stringify(d));
   return d;
 }
-function remainingScansToday() { return Math.max(0, DAILY_LIMIT - getDailyState().count); }
+function remainingScansToday() {
+  if (isPro()) return Infinity;
+  return Math.max(0, DAILY_LIMIT - getDailyState().count);
+}
+
+function loadPlan() {
+  try { return JSON.parse(localStorage.getItem(STORAGE_PLAN) || 'null') || { tier: 'free', cycle: null }; }
+  catch (e) { return { tier: 'free', cycle: null }; }
+}
+function savePlan(p) { localStorage.setItem(STORAGE_PLAN, JSON.stringify(p)); }
+function isPro() { return loadPlan().tier === 'pro'; }
 
 /* ---------------- Onboarding ---------------- */
 
@@ -277,13 +302,23 @@ function canvasFromImage(img) {
   return c;
 }
 
+function showFreezeFrame(which, canvas) {
+  const video = $(`#video-${which}`);
+  const still = $(`#still-${which}`);
+  still.src = canvas.toDataURL('image/jpeg', 0.85);
+  still.classList.remove('hidden');
+  video.classList.add('hidden');
+  return new Promise((resolve) => setTimeout(resolve, 550));
+}
+
 function initCaptureControls() {
   $('#btn-upload-front').addEventListener('click', () => $('#file-front').click());
   $('#file-front').addEventListener('change', (e) => handleUpload(e, 'front'));
-  $('#btn-capture-front').addEventListener('click', () => {
+  $('#btn-capture-front').addEventListener('click', async () => {
     const canvas = canvasFromVideo($('#video-front'));
     if (!canvas) return;
     state.captured.frontCanvas = canvas;
+    await showFreezeFrame('front', canvas);
     stopStream('front');
     showCapStep('side');
     startStream('side');
@@ -291,10 +326,11 @@ function initCaptureControls() {
 
   $('#btn-upload-side').addEventListener('click', () => $('#file-side').click());
   $('#file-side').addEventListener('change', (e) => handleUpload(e, 'side'));
-  $('#btn-capture-side').addEventListener('click', () => {
+  $('#btn-capture-side').addEventListener('click', async () => {
     const canvas = canvasFromVideo($('#video-side'));
     if (!canvas) return;
     state.captured.sideCanvas = canvas;
+    await showFreezeFrame('side', canvas);
     stopStream('side');
     runAnalyzingSequence();
   });
@@ -308,15 +344,17 @@ function handleUpload(e, which) {
   const file = e.target.files[0];
   if (!file) return;
   const img = new Image();
-  img.onload = () => {
+  img.onload = async () => {
     const canvas = canvasFromImage(img);
     if (which === 'front') {
       state.captured.frontCanvas = canvas;
+      await showFreezeFrame('front', canvas);
       stopStream('front');
       showCapStep('side');
       startStream('side');
     } else {
       state.captured.sideCanvas = canvas;
+      await showFreezeFrame('side', canvas);
       stopStream('side');
       runAnalyzingSequence();
     }
@@ -448,7 +486,7 @@ function renderReveal(record) {
         <span class="of10">/ 10 · ${tierFor(record.overall).label}</span>
       </div>
       <div class="reveal-grid" id="reveal-grid"></div>
-      <p class="reveal-tag">vysage.app</p>
+      <p class="reveal-tag">${isPro() ? 'Vysage Pro' : 'vysage.app'}</p>
     </div>
     <div class="reveal-actions">
       <button class="btn btn-secondary" id="btn-download-reveal" style="flex:1">Download image</button>
@@ -499,12 +537,60 @@ function animateCountUp(el, target) {
 function downloadReveal() {
   const target = $('#reveal-capture-target');
   if (!window.html2canvas) { toast('Image export unavailable offline'); return; }
-  html2canvas(target, { backgroundColor: '#04060B', scale: 2 }).then((canvas) => {
-    const link = document.createElement('a');
-    link.download = `vysage-result-${Date.now()}.png`;
-    link.href = canvas.toDataURL('image/png');
-    link.click();
-  }).catch(() => toast('Could not export image'));
+
+  const btn = $('#btn-download-reveal');
+  const originalLabel = btn.textContent;
+  btn.textContent = 'Preparing…';
+  btn.disabled = true;
+
+  // html2canvas snapshots computed style synchronously — if it runs while
+  // our entrance animations (opacity/transform via @keyframes) are still
+  // in flight, elements can be captured mid-animation (or before it even
+  // starts), which is why exports came out blank except static text.
+  // Force every animated node to its finished, static state first.
+  const animated = target.querySelectorAll(
+    '.reveal-title, .reveal-photo-ring, .reveal-brand, .reveal-score-row, .reveal-card, .reveal-tag'
+  );
+  animated.forEach((el) => {
+    el.style.animation = 'none';
+    el.style.opacity = '1';
+    el.style.transform = 'none';
+  });
+  target.querySelectorAll('.reveal-bar-fill').forEach((bar) => {
+    bar.style.transition = 'none';
+    bar.style.width = bar.dataset.width + '%';
+  });
+
+  const finalizeAndCapture = () => {
+    html2canvas(target, { backgroundColor: '#04060B', scale: 2, useCORS: true, logging: false })
+      .then((canvas) => {
+        const link = document.createElement('a');
+        link.download = `vysage-result-${Date.now()}.png`;
+        link.href = canvas.toDataURL('image/png');
+        link.click();
+      })
+      .catch(() => toast('Could not export image'))
+      .finally(() => {
+        btn.textContent = originalLabel;
+        btn.disabled = false;
+        // Restore animation classes in case the user keeps browsing this screen.
+        animated.forEach((el) => { el.style.animation = ''; el.style.opacity = ''; el.style.transform = ''; });
+      });
+  };
+
+  // Also make sure the profile photo has actually finished decoding —
+  // otherwise html2canvas can render an empty circle even with the
+  // animation fix above.
+  const img = target.querySelector('.reveal-photo-ring img');
+  if (img && !img.complete) {
+    img.addEventListener('load', finalizeAndCapture, { once: true });
+    img.addEventListener('error', finalizeAndCapture, { once: true });
+  } else if (img && img.decode) {
+    img.decode().then(finalizeAndCapture).catch(finalizeAndCapture);
+  } else {
+    // give the style changes a paint frame before capturing
+    requestAnimationFrame(() => requestAnimationFrame(finalizeAndCapture));
+  }
 }
 
 /* ---------------- Main app ---------------- */
@@ -536,6 +622,7 @@ function switchView(name) {
   if (name === 'dashboard') renderDashboard();
   if (name === 'progress') renderProgress();
   if (name === 'profile') renderProfileView();
+  if (name === 'plans') renderPlansScreen();
 }
 
 /* ---------------- Dashboard rendering ---------------- */
@@ -551,7 +638,7 @@ function toast(msg) {
 function renderDashboard() {
   const scans = loadScans();
   const remaining = remainingScansToday();
-  $('#link-scan-limit').textContent = `${remaining}/${DAILY_LIMIT} scans left today`;
+  $('#link-scan-limit').textContent = isPro() ? 'Unlimited scans · Pro' : `${remaining}/${DAILY_LIMIT} scans left today`;
 
   if (!scans.length) {
     $('#dashboard-empty').classList.remove('hidden');
@@ -704,7 +791,11 @@ function renderProgress() {
   }).join('');
   svg.innerHTML = `<polyline points="${pts.join(' ')}" fill="none" stroke="#3EB8A6" stroke-width="1.6"/>${dots}`;
 
-  [...scans].reverse().forEach((s) => {
+  const reversed = [...scans].reverse();
+  const pro = isPro();
+  const visible = pro ? reversed : reversed.slice(0, FREE_HISTORY_LIMIT);
+
+  visible.forEach((s) => {
     const row = document.createElement('div');
     row.className = 'history-row';
     const d = new Date(s.date);
@@ -718,6 +809,15 @@ function renderProgress() {
     `;
     historyList.appendChild(row);
   });
+
+  if (!pro && reversed.length > FREE_HISTORY_LIMIT) {
+    const hidden = reversed.length - FREE_HISTORY_LIMIT;
+    const nudge = document.createElement('div');
+    nudge.className = 'upsell-row';
+    nudge.innerHTML = `${hidden} earlier scan${hidden > 1 ? 's' : ''} hidden on Free · <a id="link-history-upsell">Upgrade to Pro</a>`;
+    historyList.appendChild(nudge);
+    $('#link-history-upsell').addEventListener('click', () => switchView('plans'));
+  }
 }
 
 /* ---------------- Profile view ---------------- */
@@ -740,6 +840,7 @@ function calcAge(birthdate) {
 function renderProfileView() {
   const p = loadProfile();
   if (!p) return;
+  renderPlanCard();
   $('#p-name').textContent = p.name || '—';
   $('#p-gender').textContent = GENDER_LABELS[p.gender] || '—';
   const age = calcAge(p.birthdate);
@@ -751,7 +852,7 @@ function renderProfileView() {
   $('#p-archetype').textContent = ARCHETYPE_LABELS[p.archetype] || '—';
   $('#p-count').textContent = loadScans().length;
   const d = getDailyState();
-  $('#p-today').textContent = `${d.count} / ${DAILY_LIMIT}`;
+  $('#p-today').textContent = isPro() ? `${d.count} (Unlimited)` : `${d.count} / ${DAILY_LIMIT}`;
 }
 
 function initProfileActions() {
@@ -760,9 +861,82 @@ function initProfileActions() {
       localStorage.removeItem(STORAGE_PROFILE);
       localStorage.removeItem(STORAGE_SCANS);
       localStorage.removeItem(STORAGE_DAILY);
+      localStorage.removeItem(STORAGE_PLAN);
       location.reload();
     }
   });
+}
+
+/* ---------------- Plans / subscription ---------------- */
+
+function renderPlansScreen() {
+  const plan = loadPlan();
+  const cycle = plan.cycle || 'monthly';
+
+  $$('#billing-toggle .chip').forEach((c) => c.classList.toggle('selected', c.dataset.cycle === cycle));
+  const pricing = PLAN_PRICING[cycle];
+  $('#price-big').textContent = pricing.big;
+  $('#price-sub').textContent = pricing.sub;
+
+  const compare = $('#feature-compare');
+  compare.innerHTML = `
+    <div class="compare-head"><span></span><span style="text-align:center;">Free</span><span class="ch-pro" style="text-align:center;">Pro</span></div>
+    ${PLAN_FEATURES.map((f) => `
+      <div class="compare-row">
+        <span class="cr-label">${f.label}</span>
+        <span class="cr-free">${f.free}</span>
+        <span class="cr-pro">${f.pro}</span>
+      </div>
+    `).join('')}
+  `;
+
+  const isP = plan.tier === 'pro';
+  $('#btn-upgrade').classList.toggle('hidden', isP);
+  $('#pro-manage-block').classList.toggle('hidden', !isP);
+}
+
+function initPlans() {
+  $('#btn-open-plans').addEventListener('click', () => switchView('plans'));
+  $('#link-plans-back').addEventListener('click', () => switchView('profile'));
+
+  $$('#billing-toggle .chip').forEach((chip) => {
+    chip.addEventListener('click', () => {
+      $$('#billing-toggle .chip').forEach((c) => c.classList.remove('selected'));
+      chip.classList.add('selected');
+      const pricing = PLAN_PRICING[chip.dataset.cycle];
+      $('#price-big').textContent = pricing.big;
+      $('#price-sub').textContent = pricing.sub;
+    });
+  });
+
+  $('#btn-upgrade').addEventListener('click', () => {
+    const cycle = $('#billing-toggle .chip.selected').dataset.cycle;
+    // NOTE: structure/UI only — no real payment is processed here.
+    // Wire this to real billing (Stripe, RevenueCat, etc.) before launch.
+    savePlan({ tier: 'pro', cycle });
+    toast('Welcome to Vysage Pro');
+    renderPlansScreen();
+  });
+
+  $('#btn-downgrade').addEventListener('click', () => {
+    if (confirm('Downgrade to Free? You will lose unlimited scans, full history, and watermark-free exports.')) {
+      savePlan({ tier: 'free', cycle: null });
+      toast('Back to Free');
+      renderPlansScreen();
+    }
+  });
+}
+
+function renderPlanCard() {
+  const plan = loadPlan();
+  const isP = plan.tier === 'pro';
+  $('#plan-badge-profile').textContent = isP ? 'PRO' : 'FREE';
+  $('#plan-badge-profile').classList.toggle('is-pro', isP);
+  $('#plan-card-title').textContent = isP ? "You're on Pro" : "You're on Free";
+  $('#plan-card-sub').textContent = isP
+    ? 'Unlimited scans, full history, and watermark-free exports are active.'
+    : 'Unlock unlimited scans, full history, and watermark-free exports.';
+  $('#btn-open-plans').textContent = isP ? 'Manage plan' : 'See Vysage Pro';
 }
 
 /* ---------------- Boot ---------------- */
@@ -772,6 +946,7 @@ function boot() {
   initCaptureControls();
   initNav();
   initProfileActions();
+  initPlans();
 
   const existing = loadProfile();
   if (existing) {
