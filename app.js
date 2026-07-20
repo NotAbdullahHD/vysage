@@ -21,6 +21,25 @@ const PLAN_PRICING = {
   monthly: { big: '$6.99', sub: '/ month' },
   yearly: { big: '$39.99', sub: '/ year' },
 };
+
+const FUN_FACTS = [
+  "The 'rule of thirds' for faces was popularized by Renaissance-era portrait artists, not modern skincare culture.",
+  "Facial symmetry is judged more by consistency across expressions than by any single still photo.",
+  "Canthal tilt is mostly bone structure — but sleep position over years can subtly affect the under-eye area.",
+  "The 'golden ratio' claim for faces (1.618) is popular online but has never been consistently proven in attractiveness research.",
+  "Camera lens choice can change perceived nose size more than almost anything you can do in real life — wide lenses distort faces up close.",
+  "Jaw definition often reads differently on video than in photos, since motion reveals muscle engagement, not just static shape.",
+  "Lighting angle can shift how deep-set or prominent eyes look more than makeup or grooming can.",
+  "Most people rate their own left and right profile differently — that's normal facial asymmetry, not a flaw.",
+  "Posture changes jaw and neck appearance more than most single grooming habits do.",
+  "A relaxed, unguarded expression is judged as more symmetric on average than a tense, posed one.",
+];
+
+const UPSELL_MESSAGES = [
+  { title: 'Unlock unlimited scans', body: "You're capped at 2 scans a day on Free. Pro lets you scan as often as you want — handy for tracking day-to-day changes." },
+  { title: 'See your full history', body: 'Free only keeps your last 5 scans visible in Progress. Pro unlocks your complete history and trend line.' },
+  { title: 'Clean exports for content', body: 'Pro removes the "vysage.app" watermark from your PNG and GIF exports — cleaner for posting.' },
+];
 const DAILY_LIMIT = 2;
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -489,8 +508,11 @@ function renderReveal(record) {
       <p class="reveal-tag">${isPro() ? 'Vysage Pro' : 'vysage.app'}</p>
     </div>
     <div class="reveal-actions">
-      <button class="btn btn-secondary" id="btn-download-reveal" style="flex:1">Download image</button>
-      <button class="btn btn-primary" id="btn-reveal-continue" style="flex:1">Continue</button>
+      <button class="btn btn-secondary" id="btn-download-reveal" style="flex:1">Save PNG</button>
+      <button class="btn btn-secondary" id="btn-download-gif" style="flex:1">Save GIF</button>
+    </div>
+    <div class="ob-actions" style="padding-top:10px;">
+      <button class="btn btn-primary" id="btn-reveal-continue" style="width:100%">Continue</button>
     </div>
   `;
 
@@ -517,9 +539,13 @@ function renderReveal(record) {
 
   $('#btn-reveal-continue').addEventListener('click', () => {
     stopAllStreams();
+    const scanCount = loadScans().length;
+    const shouldUpsell = !isPro() && scanCount > 0 && scanCount % 3 === 0;
     enterMainApp();
+    if (shouldUpsell) setTimeout(() => showUpsellModal(), 450);
   });
   $('#btn-download-reveal').addEventListener('click', () => downloadReveal());
+  $('#btn-download-gif').addEventListener('click', () => downloadRevealGif(record));
 }
 
 function animateCountUp(el, target) {
@@ -593,6 +619,142 @@ function downloadReveal() {
   }
 }
 
+/* ---------------- GIF export (replays the same entrance animation) ---------------- */
+
+function easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
+function easeOutBack(t) {
+  const c1 = 1.70158, c3 = c1 + 1;
+  return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
+}
+function clamp01(v) { return Math.max(0, Math.min(1, v)); }
+
+// Mirrors the CSS timings in style.css (.reveal-title/.reveal-photo-ring/
+// .reveal-brand/.reveal-score-row/.reveal-card/.reveal-tag) so the exported
+// GIF matches what's actually seen on screen.
+function revealTimelineItems(cardCount) {
+  const items = [
+    { selector: '.reveal-title', delay: 0, dur: 500, type: 'fade' },
+    { selector: '.reveal-photo-ring', delay: 150, dur: 600, type: 'pop' },
+    { selector: '.reveal-brand', delay: 300, dur: 500, type: 'fade' },
+    { selector: '.reveal-score-row', delay: 350, dur: 500, type: 'fade' },
+    { selector: '.reveal-tag', delay: 500, dur: 500, type: 'fade' },
+  ];
+  for (let i = 0; i < cardCount; i++) {
+    items.push({ selector: `#reveal-grid .reveal-card:nth-child(${i + 1})`, delay: 400 + i * 60, dur: 450, type: 'fade' });
+  }
+  return items;
+}
+
+function applyRevealFrame(target, timeMs, timelineItems, overallScore, metricEntries) {
+  timelineItems.forEach((item) => {
+    target.querySelectorAll(item.selector).forEach((el) => {
+      const localT = clamp01((timeMs - item.delay) / item.dur);
+      if (timeMs < item.delay) {
+        el.style.opacity = '0';
+        el.style.transform = item.type === 'pop' ? 'scale(0.85)' : 'translateY(10px)';
+        return;
+      }
+      if (item.type === 'pop') {
+        const e = easeOutBack(localT);
+        el.style.opacity = clamp01(localT / 0.5);
+        el.style.transform = `scale(${0.85 + 0.15 * e})`;
+      } else {
+        const e = easeOutCubic(localT);
+        el.style.opacity = e;
+        el.style.transform = `translateY(${(1 - e) * 10}px)`;
+      }
+    });
+  });
+
+  // Score count-up (starts at t=0, ~900ms, matches animateCountUp)
+  const scoreT = clamp01(timeMs / 900);
+  const countEl = target.querySelector('#reveal-count');
+  if (countEl) countEl.textContent = (overallScore * easeOutCubic(scoreT)).toFixed(1);
+
+  // Metric cards' numbers + bars (start at t=500ms, matches the setTimeout in renderReveal)
+  const barsT = clamp01((timeMs - 500) / 900);
+  const barsEase = easeOutCubic(barsT);
+  target.querySelectorAll('#reveal-grid .reveal-card').forEach((card, i) => {
+    const m = metricEntries[i];
+    if (!m) return;
+    const valEl = card.querySelector('.r-val');
+    const barEl = card.querySelector('.reveal-bar-fill');
+    if (valEl) valEl.textContent = (m.score * barsEase).toFixed(1);
+    if (barEl) { barEl.style.transition = 'none'; barEl.style.width = (m.score * 10 * barsEase) + '%'; }
+  });
+}
+
+async function downloadRevealGif(record) {
+  if (!window.html2canvas) { toast('GIF export needs a connection to load the renderer'); return; }
+  if (!window.GIF) { toast('GIF export needs a connection to load the encoder'); return; }
+
+  const target = $('#reveal-capture-target');
+  const btn = $('#btn-download-gif');
+  const otherBtn = $('#btn-download-reveal');
+  const originalLabel = btn.textContent;
+  btn.disabled = true;
+  otherBtn.disabled = true;
+
+  const metricEntries = Object.values(record.metrics);
+  const timelineItems = revealTimelineItems(metricEntries.length);
+
+  // Stop the live CSS animations so they don't fight our manual frame-setting.
+  const animated = target.querySelectorAll('.reveal-title, .reveal-photo-ring, .reveal-brand, .reveal-score-row, .reveal-card, .reveal-tag');
+  animated.forEach((el) => { el.style.animation = 'none'; });
+
+  const TOTAL_MS = 1500;
+  const FRAME_MS = 90; // ~11fps — enough to read as smooth for this kind of motion, keeps render time reasonable
+  const frameCount = Math.ceil(TOTAL_MS / FRAME_MS);
+
+  const gif = new GIF({
+    workers: 2,
+    quality: 10,
+    width: target.offsetWidth,
+    height: target.offsetHeight,
+    workerScript: 'https://cdn.jsdelivr.net/npm/gif.js@0.2.0/dist/gif.worker.js',
+  });
+
+  try {
+    for (let f = 0; f < frameCount; f++) {
+      const t = f * FRAME_MS;
+      applyRevealFrame(target, t, timelineItems, record.overall, metricEntries);
+      await new Promise((r) => requestAnimationFrame(r));
+      const canvas = await html2canvas(target, { backgroundColor: '#04060B', scale: 1, logging: false });
+      gif.addFrame(canvas, { delay: FRAME_MS, copy: true });
+      btn.textContent = `Rendering… ${Math.round(((f + 1) / (frameCount + 1)) * 100)}%`;
+    }
+    // Hold the finished state for a beat so it doesn't feel cut off.
+    applyRevealFrame(target, TOTAL_MS, timelineItems, record.overall, metricEntries);
+    await new Promise((r) => requestAnimationFrame(r));
+    const lastCanvas = await html2canvas(target, { backgroundColor: '#04060B', scale: 1, logging: false });
+    gif.addFrame(lastCanvas, { delay: 1100, copy: true });
+
+    await new Promise((resolve, reject) => {
+      gif.on('finished', (blob) => {
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.download = `vysage-result-${Date.now()}.gif`;
+        link.href = url;
+        link.click();
+        setTimeout(() => URL.revokeObjectURL(url), 4000);
+        resolve();
+      });
+      gif.on('abort', () => reject(new Error('GIF render aborted')));
+      gif.render();
+    });
+  } catch (err) {
+    console.error(err);
+    toast('Could not export GIF');
+  } finally {
+    // Restore final resting visual state and re-enable both buttons.
+    animated.forEach((el) => { el.style.animation = ''; el.style.opacity = ''; el.style.transform = ''; });
+    target.querySelectorAll('.reveal-bar-fill').forEach((b) => { b.style.transition = ''; });
+    btn.textContent = originalLabel;
+    btn.disabled = false;
+    otherBtn.disabled = false;
+  }
+}
+
 /* ---------------- Main app ---------------- */
 
 function enterMainApp() {
@@ -605,12 +767,26 @@ function enterMainApp() {
 }
 
 function initNav() {
-  $$('.tab').forEach((tab) => tab.addEventListener('click', () => switchView(tab.dataset.view)));
+  $$('.tab').forEach((tab) => tab.addEventListener('click', () => {
+    switchView(tab.dataset.view);
+    if (tab.dataset.view === 'dashboard') maybeShowFactPopup();
+  }));
   $('#btn-empty-scan').addEventListener('click', () => startNewScan());
   $('#btn-new-scan').addEventListener('click', () => startNewScan());
 }
 
 function startNewScan() {
+  if (!isPro() && remainingScansToday() <= 0) {
+    showModal({
+      eyebrow: 'Daily limit reached',
+      title: "You've used today's free scans",
+      body: 'Free includes 2 scans a day. Go Pro for unlimited scans, so you can track changes as often as you like.',
+      ctaText: 'See Vysage Pro',
+      onCta: () => switchView('plans'),
+      dismissText: 'Maybe later',
+    });
+    return;
+  }
   state.pendingScanContext = 'dashboard';
   beginCaptureFlow();
 }
@@ -665,8 +841,8 @@ function renderDashboard() {
   renderBlueprint(best);
   renderProtocols(best.metrics);
 
-  $('#btn-new-scan').disabled = remaining <= 0;
-  $('#btn-new-scan').textContent = remaining <= 0 ? 'Daily limit reached' : 'New scan';
+  $('#btn-new-scan').disabled = false;
+  $('#btn-new-scan').textContent = (!isPro() && remaining <= 0) ? 'Daily limit reached · Go Pro' : 'New scan';
 }
 
 function colorForScore(score) {
@@ -697,7 +873,7 @@ function renderBlueprint(record) {
   const svg = $('#blueprint-svg');
   const pts = record.landmarkPoints;
   const { w, h } = record.imageSize;
-  if (!pts || !w) { svg.innerHTML = ''; return; }
+  if (!pts || !w || pts.length < 68) { svg.innerHTML = ''; return; }
 
   const pad = 20;
   const vw = 220, vh = 260;
@@ -867,6 +1043,62 @@ function initProfileActions() {
   });
 }
 
+/* ---------------- Generic modal + popups ---------------- */
+
+function showModal({ eyebrow, title, body, ctaText, onCta, dismissText, onDismiss }) {
+  closeModal();
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'active-modal';
+  overlay.innerHTML = `
+    <div class="modal-card">
+      ${eyebrow ? `<p class="eyebrow">${eyebrow}</p>` : ''}
+      <h3>${title}</h3>
+      <p>${body}</p>
+      <div class="modal-actions">
+        ${dismissText ? `<button class="btn btn-secondary" id="modal-dismiss">${dismissText}</button>` : ''}
+        <button class="btn btn-primary" id="modal-cta" style="${dismissText ? '' : 'width:100%'}">${ctaText}</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  $('#modal-cta').addEventListener('click', () => { closeModal(); if (onCta) onCta(); });
+  if (dismissText) {
+    $('#modal-dismiss').addEventListener('click', () => { closeModal(); if (onDismiss) onDismiss(); });
+  }
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(); });
+}
+function closeModal() {
+  const existing = document.getElementById('active-modal');
+  if (existing) existing.remove();
+}
+
+function shouldShowThrottledPopup(key, cooldownMs) {
+  const last = parseInt(localStorage.getItem(key) || '0', 10);
+  return (Date.now() - last) > cooldownMs;
+}
+function markThrottledPopupShown(key) { localStorage.setItem(key, String(Date.now())); }
+
+function maybeShowFactPopup() {
+  if (!shouldShowThrottledPopup('vysage_last_fact_v1', 6 * 60 * 60 * 1000)) return;
+  if (Math.random() > 0.45) return;
+  markThrottledPopupShown('vysage_last_fact_v1');
+  const fact = FUN_FACTS[Math.floor(Math.random() * FUN_FACTS.length)];
+  showModal({ eyebrow: 'Did you know', title: 'A quick fact', body: fact, ctaText: 'Got it' });
+}
+
+function showUpsellModal() {
+  const msg = UPSELL_MESSAGES[Math.floor(Math.random() * UPSELL_MESSAGES.length)];
+  showModal({
+    eyebrow: 'Vysage Pro',
+    title: msg.title,
+    body: msg.body,
+    ctaText: 'See Vysage Pro',
+    onCta: () => switchView('plans'),
+    dismissText: 'Not now',
+  });
+}
+
 /* ---------------- Plans / subscription ---------------- */
 
 function renderPlansScreen() {
@@ -909,22 +1141,115 @@ function initPlans() {
     });
   });
 
-  $('#btn-upgrade').addEventListener('click', () => {
+  $('#btn-upgrade').addEventListener('click', async () => {
     const cycle = $('#billing-toggle .chip.selected').dataset.cycle;
-    // NOTE: structure/UI only — no real payment is processed here.
-    // Wire this to real billing (Stripe, RevenueCat, etc.) before launch.
-    savePlan({ tier: 'pro', cycle });
-    toast('Welcome to Vysage Pro');
-    renderPlansScreen();
+    const btn = $('#btn-upgrade');
+    const original = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Redirecting…';
+    try {
+      const res = await fetch('/api/create-checkout-session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cycle }),
+      });
+      if (!res.ok) throw new Error(`checkout request failed (${res.status})`);
+      const data = await res.json();
+      if (!data.url) throw new Error('no checkout url returned');
+      window.location.href = data.url; // leaving the page — Stripe Checkout takes over
+      return;
+    } catch (err) {
+      // Expected during local dev or before Stripe env vars are set on Vercel —
+      // fall back to a local-only simulated upgrade so the UI still demos.
+      console.warn('Stripe checkout unavailable, using local simulated upgrade instead:', err);
+      savePlan({ tier: 'pro', cycle });
+      toast('Welcome to Vysage Pro (simulated — Stripe not connected yet)');
+      renderPlansScreen();
+      renderPlanCard();
+    }
+    btn.disabled = false;
+    btn.textContent = original;
   });
 
-  $('#btn-downgrade').addEventListener('click', () => {
-    if (confirm('Downgrade to Free? You will lose unlimited scans, full history, and watermark-free exports.')) {
-      savePlan({ tier: 'free', cycle: null });
-      toast('Back to Free');
-      renderPlansScreen();
+  $('#btn-downgrade').addEventListener('click', async () => {
+    const plan = loadPlan();
+    if (!plan.customerId) {
+      // No real Stripe customer on file — this was a local simulated upgrade.
+      if (confirm('Reset to Free? (No live Stripe subscription on file — this only clears the local demo flag.)')) {
+        savePlan({ tier: 'free', cycle: null });
+        toast('Back to Free');
+        renderPlansScreen();
+        renderPlanCard();
+      }
+      return;
     }
+    const btn = $('#btn-downgrade');
+    const original = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Opening billing portal…';
+    try {
+      const res = await fetch('/api/create-portal-session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ customer_id: plan.customerId }),
+      });
+      if (!res.ok) throw new Error(`portal request failed (${res.status})`);
+      const data = await res.json();
+      if (!data.url) throw new Error('no portal url returned');
+      window.location.href = data.url;
+      return;
+    } catch (err) {
+      console.error('billing portal error', err);
+      toast('Could not open billing portal');
+    }
+    btn.disabled = false;
+    btn.textContent = original;
   });
+}
+
+/* ---------------- Stripe checkout return handling ---------------- */
+
+async function handleCheckoutReturn() {
+  const params = new URLSearchParams(window.location.search);
+  const checkout = params.get('checkout');
+  if (!checkout) return;
+
+  if (checkout === 'success') {
+    const sessionId = params.get('session_id');
+    try {
+      const res = await fetch(`/api/verify-session?session_id=${encodeURIComponent(sessionId)}`);
+      const data = await res.json();
+      if (data.pro) {
+        savePlan({ tier: 'pro', cycle: data.cycle, customerId: data.customerId, subscriptionId: data.subscriptionId });
+        toast('Welcome to Vysage Pro');
+      } else {
+        toast('Payment not confirmed yet — check your email or try again');
+      }
+    } catch (err) {
+      console.error('verify-session failed', err);
+      toast('Could not confirm payment — contact support if you were charged');
+    }
+  }
+  // Strip the query string either way so a refresh doesn't re-trigger this.
+  window.history.replaceState({}, '', window.location.pathname);
+}
+
+async function reverifyProStatus() {
+  const plan = loadPlan();
+  if (plan.tier !== 'pro' || !plan.customerId) return;
+  try {
+    const res = await fetch(`/api/check-subscription?customer_id=${encodeURIComponent(plan.customerId)}`);
+    if (!res.ok) return;
+    const data = await res.json();
+    if (!data.pro) {
+      savePlan({ tier: 'free', cycle: null });
+    } else if (data.cycle && data.cycle !== plan.cycle) {
+      savePlan({ ...plan, cycle: data.cycle });
+    }
+  } catch (err) {
+    // Network hiccup — don't punish the user by downgrading on a transient failure.
+    console.warn('Could not re-verify subscription status', err);
+  }
 }
 
 function renderPlanCard() {
@@ -941,12 +1266,15 @@ function renderPlanCard() {
 
 /* ---------------- Boot ---------------- */
 
-function boot() {
+async function boot() {
   initOnboarding();
   initCaptureControls();
   initNav();
   initProfileActions();
   initPlans();
+
+  await handleCheckoutReturn();
+  await reverifyProStatus();
 
   const existing = loadProfile();
   if (existing) {

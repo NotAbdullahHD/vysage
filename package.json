@@ -1,0 +1,10 @@
+{
+  "name": "vysage",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Vysage — facial geometry scanner PWA with serverless Stripe billing on Vercel",
+  "dependencies": {
+    "stripe": "^17.4.0"
+  }
+}

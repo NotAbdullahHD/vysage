@@ -1061,3 +1061,52 @@ input[type="date"]:focus { outline: none; border-color: var(--gold); }
   margin-top: 6px;
 }
 .upsell-row a { color: var(--gold); font-family: var(--mono); font-size: 11px; text-decoration: underline; cursor: pointer; }
+
+/* ============================================================
+   Generic modal (upsell reminders + fun-fact popups)
+   ============================================================ */
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(4,6,11,0.72);
+  backdrop-filter: blur(3px);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  z-index: 200;
+  animation: fadeIn 0.2s ease;
+}
+@media (min-width: 900px) {
+  .modal-overlay { align-items: center; }
+}
+.modal-card {
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-top-left-radius: 20px;
+  border-top-right-radius: 20px;
+  padding: 26px 22px calc(22px + env(safe-area-inset-bottom));
+  width: 100%;
+  max-width: 480px;
+  animation: modalUp 0.28s cubic-bezier(.2,.8,.3,1);
+}
+@media (min-width: 900px) {
+  .modal-card { border-radius: 16px; }
+}
+@keyframes modalUp {
+  from { transform: translateY(24px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+.modal-card h3 {
+  font-family: var(--display);
+  font-size: 19px;
+  font-weight: 600;
+  margin: 8px 0 8px;
+}
+.modal-card p {
+  font-size: 13.5px;
+  color: var(--ink-dim);
+  line-height: 1.55;
+  margin: 0 0 20px;
+}
+.modal-actions { display: flex; gap: 10px; }
