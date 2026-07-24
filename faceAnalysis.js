@@ -26,9 +26,23 @@ async function ensureModelsLoaded(onProgress) {
 }
 
 async function detectFace(imageEl) {
-  const options = new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.4 });
-  const result = await faceapi.detectSingleFace(imageEl, options).withFaceLandmarks();
-  return result || null;
+  // Multi-pass detection: start with a higher input size for better landmark
+  // accuracy on typical selfies, then fall back to a larger/looser pass if
+  // the first misses (harder lighting, off-angle faces).
+  const passes = [
+    { inputSize: 416, scoreThreshold: 0.5 },
+    { inputSize: 512, scoreThreshold: 0.35 },
+    { inputSize: 320, scoreThreshold: 0.3 },
+  ];
+  for (const p of passes) {
+    try {
+      const r = await faceapi
+        .detectSingleFace(imageEl, new faceapi.TinyFaceDetectorOptions(p))
+        .withFaceLandmarks();
+      if (r) return r;
+    } catch (e) { /* try next pass */ }
+  }
+  return null;
 }
 
 function dist(a, b) {
@@ -51,37 +65,58 @@ function scoreFromDeviation(actual, ideal, tolerance) {
 }
 
 function estimateSkinScore(canvas, points) {
-  // Sample a patch on each cheek, measure local pixel variance as a
-  // rough smoothness proxy. Not a dermatological assessment.
+  // Sample multiple patches (both cheeks, forehead, chin) and combine local
+  // luminance variance (smoothness) with cross-patch color drift (tone
+  // evenness) for a more stable skin-quality proxy. Still a heuristic —
+  // not a dermatological assessment.
   const ctx = canvas.getContext('2d');
+  // brow midpoint (approx forehead), left cheek, right cheek, chin area
+  const brow = { x: (points[19].x + points[24].x) / 2, y: Math.min(points[19].y, points[24].y) };
+  const foreheadY = Math.max(4, brow.y - (points[30].y - brow.y) * 0.55);
   const patches = [
-    points[1], points[15] // near cheeks
+    { x: brow.x, y: foreheadY },
+    points[2],
+    points[14],
+    { x: points[8].x, y: points[8].y - 12 },
   ];
+  const size = 22;
   let totalVar = 0;
-  let samples = 0;
+  const meansL = [];
+  const meansAB = []; // rough chroma via (R-G, R-B)
   patches.forEach((p) => {
-    const size = 18;
     const x = clamp(Math.round(p.x - size / 2), 0, canvas.width - size);
     const y = clamp(Math.round(p.y - size / 2), 0, canvas.height - size);
     try {
       const data = ctx.getImageData(x, y, size, size).data;
-      let sum = 0, sumSq = 0, n = 0;
+      let sum = 0, sumSq = 0, sR = 0, sG = 0, sB = 0, n = 0;
       for (let i = 0; i < data.length; i += 4) {
-        const g = (data[i] + data[i + 1] + data[i + 2]) / 3;
-        sum += g; sumSq += g * g; n++;
+        const r = data[i], g = data[i + 1], b = data[i + 2];
+        const l = (r + g + b) / 3;
+        sum += l; sumSq += l * l;
+        sR += r; sG += g; sB += b;
+        n++;
       }
       const mean = sum / n;
-      const variance = sumSq / n - mean * mean;
-      totalVar += variance;
-      samples++;
+      totalVar += sumSq / n - mean * mean;
+      meansL.push(mean);
+      meansAB.push([sR / n - sG / n, sR / n - sB / n]);
     } catch (e) { /* ignore sampling errors */ }
   });
-  if (!samples) return 6.5;
-  const avgVar = totalVar / samples;
-  // lower local variance (smoother patch) -> higher score. Empirically
-  // tuned range; clamps to keep results in a believable band.
-  const score = 10 - (avgVar / 90);
-  return clamp(score, 4, 9.2);
+  if (!meansL.length) return 6.5;
+  const avgVar = totalVar / meansL.length;
+  // Smoothness: lower local variance -> higher score.
+  const smoothScore = 10 - (avgVar / 95);
+  // Evenness: how tightly patch luminance/chroma cluster across the face.
+  const meanL = meansL.reduce((a, b) => a + b, 0) / meansL.length;
+  const lSpread = Math.sqrt(meansL.reduce((s, v) => s + (v - meanL) ** 2, 0) / meansL.length);
+  const meanA = meansAB.reduce((s, v) => s + v[0], 0) / meansAB.length;
+  const meanB = meansAB.reduce((s, v) => s + v[1], 0) / meansAB.length;
+  const chromaSpread = Math.sqrt(
+    meansAB.reduce((s, v) => s + (v[0] - meanA) ** 2 + (v[1] - meanB) ** 2, 0) / meansAB.length
+  );
+  const evenScore = 10 - (lSpread / 4) - (chromaSpread / 3);
+  const combined = smoothScore * 0.65 + evenScore * 0.35;
+  return clamp(combined, 3.5, 9.4);
 }
 
 function analyzeLandmarks(landmarks, canvas) {
@@ -105,7 +140,10 @@ function analyzeLandmarks(landmarks, canvas) {
   const interocular = dist(rightEye[3], leftEye[0]); // inner corners
   const eyeSpanOuter = dist(rightEye[0], leftEye[3]); // outer corners
   const faceWidth = dist(jawL, jawR);
-  const midlineX = (pts[27].x + chin.x) / 2;
+  // Anchor the midline to the nose-bridge/philtrum column (pts 27, 30, 33)
+  // instead of averaging brow and chin — this is far more stable against
+  // a tilted chin or asymmetric jaw and gives a more accurate symmetry read.
+  const midlineX = (pts[27].x + pts[30].x + pts[33].x) / 3;
 
   // ---- Canthal tilt (avg of both eyes, deg; positive = upturned) ----
   const rTilt = -angleDeg(rightEye[0], rightEye[3]); // outer(0) to inner(3)
@@ -113,29 +151,47 @@ function analyzeLandmarks(landmarks, canvas) {
   const canthalTilt = (rTilt + lTilt) / 2;
   const canthalScore = scoreFromDeviation(canthalTilt, 4, 6);
 
-  // ---- Symmetry: compare left/right distances from facial midline ----
-  const pairs = [[0, 16], [1, 15], [3, 13], [36, 45], [31, 35], [48, 54]];
+  // ---- Symmetry: compare mirrored landmark pairs on BOTH axes ----
+  // For each pair, measure the residual after reflecting one point across
+  // the midline — captures both horizontal asymmetry (offset from midline)
+  // and vertical asymmetry (one side sitting higher than the other).
+  const pairs = [
+    [0, 16], [1, 15], [2, 14], [3, 13], [4, 12],   // jaw contour
+    [17, 26], [19, 24],                             // brows
+    [36, 45], [39, 42],                             // eye corners
+    [31, 35], [32, 34],                             // nostrils
+    [48, 54], [50, 52], [59, 55],                   // mouth corners + arc
+  ];
   let symDiffSum = 0;
   pairs.forEach(([li, ri]) => {
-    const dl = Math.abs(pts[li].x - midlineX);
-    const dr = Math.abs(pts[ri].x - midlineX);
-    symDiffSum += Math.abs(dl - dr) / faceWidth;
+    const mirroredX = 2 * midlineX - pts[ri].x;
+    const dx = (pts[li].x - mirroredX) / faceWidth;
+    const dy = (pts[li].y - pts[ri].y) / faceWidth;
+    symDiffSum += Math.hypot(dx, dy);
   });
   const symAvg = symDiffSum / pairs.length;
-  const symmetryScore = clamp(10 - symAvg * 90, 1, 10);
+  const symmetryScore = clamp(10 - symAvg * 55, 1, 10);
 
-  // ---- Midface ratio: (brow->nose base) vs (nose base->chin) ----
+  // ---- Facial thirds: brow->nose base vs nose base->chin (classical 1:1) ----
   const upperMid = dist(browTop, noseBaseC);
   const lowerMid = dist(noseBaseC, chin);
   const midfaceRatio = upperMid / lowerMid;
-  const midfaceScore = scoreFromDeviation(midfaceRatio, 0.82, 0.28);
+  // Ideal middle:lower third ≈ 1.0. Blend with the classical 0.82 midface
+  // proportion for stability across face shapes.
+  const thirdsScore = scoreFromDeviation(midfaceRatio, 1.0, 0.22);
+  const classicMid = scoreFromDeviation(midfaceRatio, 0.82, 0.28);
+  const midfaceScore = clamp((thirdsScore * 0.6 + classicMid * 0.4), 1, 10);
 
   // ---- Jawline: width + taper (gonial approx) ----
   const jawWidthRatio = faceWidth / eyeSpanOuter;
   const jawTaper = dist(jaw[4], jaw[12]) / faceWidth; // upper jaw width vs full width
   const jawWidthScore = scoreFromDeviation(jawWidthRatio, 1.62, 0.22);
   const jawTaperScore = scoreFromDeviation(jawTaper, 0.86, 0.1);
-  const jawlineScore = clamp((jawWidthScore + jawTaperScore) / 2, 1, 10);
+  // Chin projection: chin should sit meaningfully below the mouth relative
+  // to nose-mouth distance (weak/receding chins score lower).
+  const chinProj = dist(pts[57], chin) / Math.max(1, dist(pts[33], pts[51]));
+  const chinScore = scoreFromDeviation(chinProj, 1.15, 0.35);
+  const jawlineScore = clamp((jawWidthScore + jawTaperScore + chinScore) / 3, 1, 10);
 
   // ---- Nose: width relative to interocular distance ----
   const noseWidth = dist(noseBase[0], noseBase[4]);

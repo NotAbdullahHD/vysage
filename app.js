@@ -7,6 +7,8 @@ const STORAGE_PROFILE = 'vysage_profile_v2';
 const STORAGE_SCANS = 'vysage_scans_v2';
 const STORAGE_DAILY = 'vysage_daily_v1';
 const STORAGE_PLAN = 'vysage_plan_v1';
+const STORAGE_REMINDER = 'vysage_last_reminder_v1';
+const STORAGE_WEEKLY_PLAN = 'vysage_weekly_plan_v1';
 const FREE_HISTORY_LIMIT = 5;
 
 const PLAN_FEATURES = [
@@ -40,6 +42,30 @@ const UPSELL_MESSAGES = [
   { title: 'See your full history', body: 'Free only keeps your last 5 scans visible in Progress. Pro unlocks your complete history and trend line.' },
   { title: 'Clean exports for content', body: 'Pro removes the "vysage.app" watermark from your PNG and GIF exports — cleaner for posting.' },
 ];
+
+// Rotating "plans" a Vysage user can adopt for a week. Shown as a popup on
+// dashboard entry, throttled to at most one new plan per 3 days.
+const WEEKLY_PLANS = [
+  { title: 'Sleep-Reset Week', body: '8 hours a night for 7 nights, phone out of the bedroom after 11pm. Rescan next Friday — under-eye and skin evenness usually shift the most here.' },
+  { title: 'Hydration Streak', body: '2.5L of water daily + one salty meal cap per day. Watch for lower morning puffiness and smoother skin variance in your next scan.' },
+  { title: 'Posture 7', body: 'Chin-tuck + shoulder-blade squeeze, 3×10 reps, twice daily. Best for jawline definition without touching bone structure.' },
+  { title: 'Skin Basics Only', body: 'Cleanser AM/PM, moisturizer AM/PM, SPF 30+ daily. Drop everything else for a week and rescan.' },
+  { title: 'Mouth-Breathing Off', body: 'Nasal breathing during walks + mouth-tape at night if safe for you. Tracks well against jawline and midface tone over 2–3 weeks.' },
+  { title: 'Camera Consistency', body: 'Same window, same time of day, same angle for every scan this week. Symmetry and skin scores stabilize dramatically.' },
+  { title: 'Low-Sodium Nights', body: 'No salty food after 7pm for 7 days. First-thing-morning puffiness is usually the first metric to move.' },
+];
+
+// Everyday nudges shown as a "Daily Reminder" pop-up once per day.
+const DAILY_REMINDERS = [
+  { title: 'Scan of the day', body: 'Your streak lives in the Progress tab. A single scan today keeps the trend line moving.' },
+  { title: 'Hydration check', body: "Have you had water in the last two hours? Skin variance readings drop noticeably when you're behind on fluids." },
+  { title: 'Posture reset', body: 'Chin slightly tucked, shoulders back, ears over shoulders. Hold 20s. Best free jawline upgrade there is.' },
+  { title: 'Sunlight window', body: '10 minutes of morning light within an hour of waking helps sleep quality — which shows up in tomorrow\'s under-eye read.' },
+  { title: 'SPF reminder', body: 'If you\'re near a window today, that counts. UV exposure is the biggest long-term skin-score driver.' },
+  { title: 'Photo consistency', body: 'For today\'s scan: same light source you used last time. This alone can swing symmetry by a full point.' },
+  { title: 'Sleep window', body: 'Aim for lights-out by 11pm tonight. Puffiness + under-eye tone usually respond within 2 nights.' },
+];
+
 const DAILY_LIMIT = 2;
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -706,11 +732,30 @@ async function downloadRevealGif(record) {
   const FRAME_MS = 90; // ~11fps — enough to read as smooth for this kind of motion, keeps render time reasonable
   const frameCount = Math.ceil(TOTAL_MS / FRAME_MS);
 
+  // Force a 1:1 square GIF regardless of the on-screen aspect ratio.
+  // We render the reveal at its natural size, then center-crop each frame
+  // into a square canvas before handing it to gif.js.
+  const SQUARE = Math.min(target.offsetWidth, target.offsetHeight);
+  const squareCanvas = document.createElement('canvas');
+  squareCanvas.width = SQUARE;
+  squareCanvas.height = SQUARE;
+  const squareCtx = squareCanvas.getContext('2d');
+
+  const cropSquare = (source) => {
+    const s = Math.min(source.width, source.height);
+    const sx = Math.max(0, (source.width - s) / 2);
+    const sy = Math.max(0, (source.height - s) / 2);
+    squareCtx.fillStyle = '#04060B';
+    squareCtx.fillRect(0, 0, SQUARE, SQUARE);
+    squareCtx.drawImage(source, sx, sy, s, s, 0, 0, SQUARE, SQUARE);
+    return squareCanvas;
+  };
+
   const gif = new GIF({
     workers: 2,
     quality: 10,
-    width: target.offsetWidth,
-    height: target.offsetHeight,
+    width: SQUARE,
+    height: SQUARE,
     workerScript: 'https://cdn.jsdelivr.net/npm/gif.js@0.2.0/dist/gif.worker.js',
   });
 
@@ -719,15 +764,15 @@ async function downloadRevealGif(record) {
       const t = f * FRAME_MS;
       applyRevealFrame(target, t, timelineItems, record.overall, metricEntries);
       await new Promise((r) => requestAnimationFrame(r));
-      const canvas = await html2canvas(target, { backgroundColor: '#04060B', scale: 1, logging: false });
-      gif.addFrame(canvas, { delay: FRAME_MS, copy: true });
+      const shot = await html2canvas(target, { backgroundColor: '#04060B', scale: 1, logging: false });
+      gif.addFrame(cropSquare(shot), { delay: FRAME_MS, copy: true });
       btn.textContent = `Rendering… ${Math.round(((f + 1) / (frameCount + 1)) * 100)}%`;
     }
     // Hold the finished state for a beat so it doesn't feel cut off.
     applyRevealFrame(target, TOTAL_MS, timelineItems, record.overall, metricEntries);
     await new Promise((r) => requestAnimationFrame(r));
-    const lastCanvas = await html2canvas(target, { backgroundColor: '#04060B', scale: 1, logging: false });
-    gif.addFrame(lastCanvas, { delay: 1100, copy: true });
+    const lastShot = await html2canvas(target, { backgroundColor: '#04060B', scale: 1, logging: false });
+    gif.addFrame(cropSquare(lastShot), { delay: 1100, copy: true });
 
     await new Promise((resolve, reject) => {
       gif.on('finished', (blob) => {
@@ -764,6 +809,12 @@ function enterMainApp() {
   const p = loadProfile();
   $('#greet-text').textContent = p && p.name ? p.name.toUpperCase() : '';
   switchView('dashboard');
+  // Notifications: at most one on any given entry, priority daily > weekly > fact.
+  setTimeout(() => {
+    if (maybeShowDailyReminder()) return;
+    if (maybeShowWeeklyPlan()) return;
+    maybeShowFactPopup();
+  }, 700);
 }
 
 function initNav() {
@@ -907,27 +958,89 @@ function renderBlueprint(record) {
 }
 
 const PROTOCOL_LIBRARY = {
-  canthalTilt: { tag: 'Eyes', text: 'Sleep and sinus congestion visibly affect eye-area appearance more than anything else here.' },
-  jawline: { tag: 'Jawline', text: 'Neck and jaw isometric holds, posture drills, and reduced mouth-breathing — small daily practices, not overnight fixes.' },
-  symmetry: { tag: 'Symmetry', text: 'Symmetry is mostly structural. Even lighting and a consistent camera angle when tracking will matter more than any routine.' },
-  skin: { tag: 'Skin', text: 'Consistent SPF, a simple cleanse/moisturize routine, and sleep are the highest-leverage, lowest-risk changes.' },
-  midface: { tag: 'Midface', text: 'Midface proportion is largely bone-structure driven and stable — tracking trend over time is more useful than chasing this number.' },
-  nose: { tag: 'Nose', text: 'Nose proportion is structural. Contour and photo angle can change how it reads far more than anything else.' },
-  eyes: { tag: 'Eyes', text: 'Sleep quality and hydration visibly affect the under-eye area more than any single "eye exercise."' },
-  lips: { tag: 'Lips', text: 'Hydration and a simple lip balm routine affect perceived fullness more than people expect.' },
+  // Each metric has three tiers: focus (< 5), refine (5–7), maintain (> 7).
+  // renderProtocols picks the tier from the actual score so tips are relevant
+  // to where the user actually is, not generic.
+  canthalTilt: {
+    tag: 'Eyes',
+    focus: 'Under-eye area is your fastest win: 8h sleep + no late-night salt for 5 nights. Sinus rinse in the morning if you wake congested. Rescan in ~1 week.',
+    refine: 'Consistent sleep window (same bedtime ±30min) and cutting screens 30 min before bed usually nudges this half a point in 2 weeks.',
+    maintain: 'Already strong. Hold your sleep window and keep camera angle consistent so this reads accurately across scans.',
+  },
+  jawline: {
+    tag: 'Jawline',
+    focus: 'Biggest lever: posture. Chin tucks 3×10, shoulder-blade squeezes 3×10, twice daily. Nasal-breathe when walking. Give it 2–3 weeks then rescan.',
+    refine: 'Add slow neck rotations + jaw isometric holds (press tongue to roof of mouth for 30s ×5). Trim visible face weight if you have any headroom there.',
+    maintain: 'Solid jaw read. Maintain posture and lean protein intake — this metric holds well once the habits are in place.',
+  },
+  symmetry: {
+    tag: 'Symmetry',
+    focus: 'Most low scores here are camera-angle, not your face. Rescan with the phone at eye level, straight on, single soft light source. Also check chewing side — one-sided chewing tightens one masseter over years.',
+    refine: 'Try scanning at the same time of day for a week — morning vs evening changes facial puffiness enough to shift this by 0.3–0.5.',
+    maintain: 'Well within natural range. No routine needed — keep scan conditions consistent so the trend stays clean.',
+  },
+  skin: {
+    tag: 'Skin',
+    focus: 'Bare minimum for 14 days: gentle cleanser AM/PM, moisturizer AM/PM, SPF 30+ every morning. Cut alcohol and late-night sugar. This metric is the most responsive of all.',
+    refine: 'Add a nightly vitamin C or niacinamide serum. 3L water/day. 7+ hours sleep. Expect ~1 point in 3–4 weeks.',
+    maintain: 'Skin routine is working — keep SPF daily and don\'t add new actives just to chase the number.',
+  },
+  midface: {
+    tag: 'Midface',
+    focus: 'This is mostly bone structure and won\'t change much. Focus on posture and camera framing (phone at nose height) — most "bad midface" reads on selfies are foreshortening from a low angle.',
+    refine: 'Shoot from slightly above eye level with a longer focal length (rear camera works). This alone can shift the read.',
+    maintain: 'Classical proportion. Just keep shot angle consistent so this stays comparable across scans.',
+  },
+  nose: {
+    tag: 'Nose',
+    focus: 'Nose width vs eye distance is structural, but wide-angle selfie cameras exaggerate it. Use your phone\'s rear camera and step back — often gains a full point instantly.',
+    refine: 'Slight subtle contour under the ala reduces perceived width on camera. Not required, but noticeable for photos.',
+    maintain: 'Balanced. Keep shot conditions consistent — front camera lens choice moves this metric more than anything you can actually do.',
+  },
+  eyes: {
+    tag: 'Eyes',
+    focus: 'Sleep + hydration for 7 days. Cold compress on the under-eye area for 60s in the morning reduces puffiness the scan picks up.',
+    refine: 'Eyebrow grooming (fill sparse spots, don\'t over-shape) can change perceived eye spacing without any procedure.',
+    maintain: 'Well-proportioned. Keep sleeping consistent so this doesn\'t drift when life gets busy.',
+  },
+  lips: {
+    tag: 'Lips',
+    focus: 'Hydration + a plain occlusive balm (Vaseline / Aquaphor) nightly for 2 weeks. Stop licking your lips — that alone flattens them visibly.',
+    refine: 'A subtle lip-scrub 2× per week + balm daily. Camera-wise: neutral expression, lips lightly together — not pressed thin.',
+    maintain: 'Good lip proportion. Keep hydrated and skip anything more aggressive.',
+  },
 };
+
+function tipTierFor(score) {
+  if (score < 5) return 'focus';
+  if (score < 7) return 'refine';
+  return 'maintain';
+}
+
+const TIER_BADGE = { focus: 'Focus', refine: 'Refine', maintain: 'Maintain' };
 
 function renderProtocols(metrics) {
   const list = $('#protocol-list');
   list.innerHTML = '';
-  const sorted = Object.entries(metrics).sort((a, b) => a[1].score - b[1].score).slice(0, 3);
-  sorted.forEach(([key, m]) => {
-    const lib = PROTOCOL_LIBRARY[key] || { tag: m.label, text: 'Track this metric over successive scans to see its trend.' };
+  // Always surface the three lowest metrics on Free, all eight on Pro so
+  // users see refine/maintain tips for their strengths too.
+  const entries = Object.entries(metrics).sort((a, b) => a[1].score - b[1].score);
+  const visible = isPro() ? entries : entries.slice(0, 3);
+  visible.forEach(([key, m]) => {
+    const lib = PROTOCOL_LIBRARY[key];
+    const tier = tipTierFor(m.score);
+    const text = lib && lib[tier]
+      ? lib[tier]
+      : 'Track this metric over successive scans to see its trend.';
+    const tag = lib ? lib.tag : m.label;
     const div = document.createElement('div');
     div.className = 'protocol-card';
     div.innerHTML = `
-      <div class="p-top"><h4>${m.label}</h4><span class="tag">${lib.tag}</span></div>
-      <p>${lib.text}</p>
+      <div class="p-top">
+        <h4>${m.label} · ${m.score.toFixed(1)}</h4>
+        <span class="tag">${tag} · ${TIER_BADGE[tier]}</span>
+      </div>
+      <p>${text}</p>
     `;
     list.appendChild(div);
   });
@@ -1085,6 +1198,45 @@ function maybeShowFactPopup() {
   markThrottledPopupShown('vysage_last_fact_v1');
   const fact = FUN_FACTS[Math.floor(Math.random() * FUN_FACTS.length)];
   showModal({ eyebrow: 'Did you know', title: 'A quick fact', body: fact, ctaText: 'Got it' });
+}
+
+function maybeShowDailyReminder() {
+  // At most once per calendar day.
+  const last = localStorage.getItem(STORAGE_REMINDER);
+  if (last === todayStr()) return false;
+  localStorage.setItem(STORAGE_REMINDER, todayStr());
+  // Deterministic pick per day so the same reminder isn't repeated within one session.
+  const seed = new Date().getDate() + new Date().getMonth() * 31;
+  const r = DAILY_REMINDERS[seed % DAILY_REMINDERS.length];
+  const scannedToday = getDailyState().count > 0;
+  const body = scannedToday
+    ? r.body
+    : r.body + '\n\nYou haven\'t scanned today yet — tap New Scan when ready.';
+  showModal({
+    eyebrow: 'Daily reminder',
+    title: r.title,
+    body,
+    ctaText: scannedToday ? 'Got it' : 'Start scan',
+    onCta: scannedToday ? undefined : () => startNewScan(),
+    dismissText: scannedToday ? undefined : 'Later',
+  });
+  return true;
+}
+
+function maybeShowWeeklyPlan() {
+  // Show at most once every 3 days; skip if a daily reminder already fired.
+  if (!shouldShowThrottledPopup(STORAGE_WEEKLY_PLAN, 3 * 24 * 60 * 60 * 1000)) return false;
+  if (Math.random() > 0.6) return false;
+  markThrottledPopupShown(STORAGE_WEEKLY_PLAN);
+  const plan = WEEKLY_PLANS[Math.floor(Math.random() * WEEKLY_PLANS.length)];
+  showModal({
+    eyebrow: 'This week\'s plan',
+    title: plan.title,
+    body: plan.body,
+    ctaText: 'I\'m in',
+    dismissText: 'Skip',
+  });
+  return true;
 }
 
 function showUpsellModal() {
