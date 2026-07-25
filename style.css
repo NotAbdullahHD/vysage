@@ -1110,3 +1110,44 @@ input[type="date"]:focus { outline: none; border-color: var(--gold); }
   margin: 0 0 20px;
 }
 .modal-actions { display: flex; gap: 10px; }
+/* ============================================================
+   Vysage v3 additions — append to the end of style.css.
+   Only additive rules: no existing selectors changed, no
+   visual redesign. Adds entrance animations, a subtle pulse
+   for primary CTAs, a smoother modal pop-in, and the compact
+   "Show more/less" toggle button used in Dashboard + Progress.
+   ============================================================ */
+
+@keyframes vyFadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.vy-fade-in { animation: vyFadeIn 0.35s ease-out both; }
+
+@keyframes vyPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(201, 162, 75, 0.0); }
+  50%      { box-shadow: 0 0 0 6px rgba(201, 162, 75, 0.18); }
+}
+.vy-pulse { animation: vyPulse 2.4s ease-in-out infinite; }
+
+@keyframes vyModalFadeIn {
+  from { opacity: 0; backdrop-filter: blur(0px); }
+  to   { opacity: 1; backdrop-filter: blur(6px); }
+}
+@keyframes vyModalPop {
+  0%   { opacity: 0; transform: translateY(14px) scale(0.96); }
+  60%  { opacity: 1; transform: translateY(-2px) scale(1.01); }
+  100% { opacity: 1; transform: translateY(0)    scale(1); }
+}
+.vy-modal-in   { animation: vyModalFadeIn 0.22s ease-out both; }
+.vy-modal-pop  { animation: vyModalPop    0.32s cubic-bezier(0.2, 0.9, 0.3, 1.2) both; }
+
+.vy-inline-toggle {
+  width: 100%;
+  margin-top: 10px;
+  padding: 10px 14px;
+  font-size: 12.5px;
+  letter-spacing: 0.04em;
+  opacity: 0.85;
+}
+.vy-inline-toggle:hover { opacity: 1; }
